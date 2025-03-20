@@ -1,22 +1,22 @@
 {
+  "author": "Michael",
+  "name": "SimplifiedSRS",
+  "description": "Only works with the previous interval.",
+  "enableOnMobile": true,
+  "repoUrl": "https://github.com/zmicha-code/SimplifiedSRS",
+  "id": "zmicha-SimplifiedSRS",
   "manifestVersion": 1,
-  "id": "plugin_template",
-  "name": "Plugin Template",
-  "author": "remnote",
-  "repoUrl": "",
   "version": {
     "major": 0,
     "minor": 0,
     "patch": 1
   },
-  "theme": [],
-  "enableOnMobile": false,
-  "description": "",
   "requestNative": false,
   "requiredScopes": [
     {
       "type": "All",
       "level": "Read"
     }
-  ]
+  ],
+  "unlisted": true
 }
