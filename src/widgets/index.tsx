@@ -9,25 +9,145 @@ import {
   WidgetLocation,
   AppEvents
 } from '@remnote/plugin-sdk';
+
+//import { getLastInterval, getWrongInRow } from './customQueueWidget';
 import '../style.css';
 import '../App.css';
 
+export function getWrongInRow(history: RepetitionStatus[]) : number {
+  let t = 0
+
+  // 
+  if(history.length < 1)
+    return t;
+
+  for (let i = history.length - 2; i >= 0; i--) {
+    if (history[i].score === QueueInteractionScore.AGAIN) {
+        t++;
+    } else {
+        break;
+    }
+}
+
+  return t;
+}
+
+export function getTimestamp(date: Date | number): number {
+  return typeof date === 'number' ? date : date.getTime();
+}
+
+export function getLastInterval(history: RepetitionStatus[]): number {
+  let lastValidScheduled: number | undefined; // Most recent HARD, GOOD, EASY, or AGAIN
+  let secondLastPracticed: number | undefined; // Most recent preceding HARD, GOOD, or EASY
+  let foundAgainBetween = false;
+
+  // Iterate from most recent to oldest
+  for (let i = history.length - 1; i >= 0; i--) {
+    const current = history[i];
+    const score = current.score;
+
+    // Stop at RESET
+    if (score === QueueInteractionScore.RESET) {
+      return 0;
+    }
+
+    // Skip TOO_EARLY
+    if (score === QueueInteractionScore.TOO_EARLY) {
+      continue;
+    }
+
+    // Handle AGAIN
+    if (score === QueueInteractionScore.AGAIN) {
+      if (!lastValidScheduled) {
+        lastValidScheduled = current.scheduled; // Set as lastValidScheduled
+        foundAgainBetween = false;
+      } else {
+        foundAgainBetween = true; // AGAIN between valid repetitions
+      }
+      continue;
+    }
+
+    // Handle HARD, GOOD, EASY
+    if (
+      score === QueueInteractionScore.HARD ||
+      score === QueueInteractionScore.GOOD ||
+      score === QueueInteractionScore.EASY
+    ) {
+      if (!lastValidScheduled) {
+        lastValidScheduled = current.scheduled; // First valid score encountered
+        foundAgainBetween = false;
+      } else if (!foundAgainBetween) {
+        secondLastPracticed = getTimestamp(current.date); // Second valid score
+        return lastValidScheduled - secondLastPracticed; // Calculate interval
+      }
+    }
+  }
+
+  // Return 0 if no valid interval is found
+  return 0;
+}
+
+export function formatMilliseconds(ms : number): string {
+  if (ms === 0) return '0 seconds'; // Special case for zero
+  if (ms < 0) ms = Math.abs(ms);    // Handle negatives with absolute value
+
+  const millisecondsInSecond = 1000;
+  const millisecondsInMinute = millisecondsInSecond * 60;
+  const millisecondsInHour = millisecondsInMinute * 60;
+  const millisecondsInDay = millisecondsInHour * 24;
+
+  let value, unit;
+
+  if (ms >= millisecondsInDay) {
+      value = ms / millisecondsInDay;
+      unit = 'day';
+  } else if (ms >= millisecondsInHour) {
+      value = ms / millisecondsInHour;
+      unit = 'hour';
+  } else if (ms >= millisecondsInMinute) {
+      value = ms / millisecondsInMinute;
+      unit = 'minute';
+  } else if (ms >= millisecondsInSecond) {
+      value = ms / millisecondsInSecond;
+      unit = 'second';
+  } else {
+      value = ms;
+      unit = 'millisecond';
+  }
+
+  // Round to 2 decimal places for clean output
+  value = Math.round(value * 100) / 100;
+
+  // Pluralize unit if value isn’t 1
+  const plural = value !== 1 ? 's' : '';
+  //return `${value} ${unit}${plural}`;
+  return value + " " + unit + plural;
+} 
+
 async function onActivate(plugin: ReactRNPlugin) {
 
-  //console.log("BetterQ: Plugin activated");
-
   await plugin.scheduler.registerCustomScheduler('SimplifiedSRS', []);
+
   //
   await plugin.app.registerCallback<SpecialPluginCallback.SRSScheduleCard>(
     SpecialPluginCallback.SRSScheduleCard,
     getNextSpacingDate
   );
 
+  await plugin.app.registerWidget('customQueueWidget', WidgetLocation.RightSidebar, {
+    dimensions: { height: 'auto', width: '100%' },
+    widgetTabIcon: "https://i.imgur.com/nGwgOpN.png"
+  });
+
   // definitions
   async function getNextSpacingDate(args: {
                                     history: RepetitionStatus[];
                                     schedulerParameters: Record<string, unknown>;
                                     cardId: string | undefined;}) : Promise<{ nextDate: number }> {
+
+    //
+    await plugin.storage.setSynced("currentQueueCardId", args.cardId);
+
     const { history } = args;
     const currentRep = history[history.length - 1];
     const lastInterval = getLastInterval(history);
@@ -111,115 +231,6 @@ async function onActivate(plugin: ReactRNPlugin) {
     const nextDate = Date.now() + nextInterval;
     return { nextDate };
   }
-
-  function getWrongInRow(history: RepetitionStatus[]) : number {
-    let t = 0
-
-    // 
-    if(history.length < 1)
-      return t;
-
-    for (let i = history.length - 2; i >= 0; i--) {
-      if (history[i].score === QueueInteractionScore.AGAIN) {
-          t++;
-      } else {
-          break;
-      }
-  }
-
-    return t;
-  }
-
-  function getTimestamp(date: Date | number): number {
-    return typeof date === 'number' ? date : date.getTime();
-  }
-
-  function getLastInterval(history: RepetitionStatus[]): number {
-    let lastValidScheduled: number | undefined; // Most recent HARD, GOOD, EASY, or AGAIN
-    let secondLastPracticed: number | undefined; // Most recent preceding HARD, GOOD, or EASY
-    let foundAgainBetween = false;
-  
-    // Iterate from most recent to oldest
-    for (let i = history.length - 1; i >= 0; i--) {
-      const current = history[i];
-      const score = current.score;
-  
-      // Stop at RESET
-      if (score === QueueInteractionScore.RESET) {
-        return 0;
-      }
-  
-      // Skip TOO_EARLY
-      if (score === QueueInteractionScore.TOO_EARLY) {
-        continue;
-      }
-  
-      // Handle AGAIN
-      if (score === QueueInteractionScore.AGAIN) {
-        if (!lastValidScheduled) {
-          lastValidScheduled = current.scheduled; // Set as lastValidScheduled
-          foundAgainBetween = false;
-        } else {
-          foundAgainBetween = true; // AGAIN between valid repetitions
-        }
-        continue;
-      }
-  
-      // Handle HARD, GOOD, EASY
-      if (
-        score === QueueInteractionScore.HARD ||
-        score === QueueInteractionScore.GOOD ||
-        score === QueueInteractionScore.EASY
-      ) {
-        if (!lastValidScheduled) {
-          lastValidScheduled = current.scheduled; // First valid score encountered
-          foundAgainBetween = false;
-        } else if (!foundAgainBetween) {
-          secondLastPracticed = getTimestamp(current.date); // Second valid score
-          return lastValidScheduled - secondLastPracticed; // Calculate interval
-        }
-      }
-    }
-  
-    // Return 0 if no valid interval is found
-    return 0;
-  }
-
-  function formatMilliseconds(ms : number) {
-    if (ms === 0) return '0 seconds'; // Special case for zero
-    if (ms < 0) ms = Math.abs(ms);    // Handle negatives with absolute value
-
-    const millisecondsInSecond = 1000;
-    const millisecondsInMinute = millisecondsInSecond * 60;
-    const millisecondsInHour = millisecondsInMinute * 60;
-    const millisecondsInDay = millisecondsInHour * 24;
-
-    let value, unit;
-
-    if (ms >= millisecondsInDay) {
-        value = ms / millisecondsInDay;
-        unit = 'day';
-    } else if (ms >= millisecondsInHour) {
-        value = ms / millisecondsInHour;
-        unit = 'hour';
-    } else if (ms >= millisecondsInMinute) {
-        value = ms / millisecondsInMinute;
-        unit = 'minute';
-    } else if (ms >= millisecondsInSecond) {
-        value = ms / millisecondsInSecond;
-        unit = 'second';
-    } else {
-        value = ms;
-        unit = 'millisecond';
-    }
-
-    // Round to 2 decimal places for clean output
-    value = Math.round(value * 100) / 100;
-
-    // Pluralize unit if value isn’t 1
-    const plural = value !== 1 ? 's' : '';
-    return `${value} ${unit}${plural}`;
-  } 
 }
 
 async function onDeactivate(_: ReactRNPlugin) {}
