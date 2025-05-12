@@ -187,7 +187,7 @@ export function getWrongInRow(history: RepetitionStatus[]) : number {
   return t;
 }
 
-export function getLastInterval(history: RepetitionStatus[] | undefined): number {
+export function getLastInterval_(history: RepetitionStatus[] | undefined): number {
   // New Card
   if (!history || history.length === 0) return 0;
 
@@ -261,55 +261,33 @@ export function getLastInterval(history: RepetitionStatus[] | undefined): number
       break;
   }
 
-  console.log("Last Recorded Working Interval: " + formatMilliseconds(lastRecordedInterval) + " Current Working Interval: " + formatMilliseconds(currentInterval));
+  //console.log("Last Recorded Working Interval: " + formatMilliseconds(lastRecordedInterval) + " Current Working Interval: " + formatMilliseconds(currentInterval));
 
   return currentInterval;
 }
 
-/*
-export function getLastIntervalBeforeAgain(history: RepetitionStatus[] | undefined): number {
-  // Step 1: Validate input
-  if (!history || history.length < 2) return DEFAULT_AGAIN;
+function getLastInterval(card: Card | undefined): number | undefined {
+    if (!card || !card.nextRepetitionTime) return 0;
 
-  // Step 2: Filter out irrelevant scores (e.g., TOO_EARLY)
-  const filteredHistory = history.filter(rep => rep.score !== QueueInteractionScore.TOO_EARLY);
+    const history = card.repetitionHistory;
 
-  // Step 3: Find the last AGAIN not preceded by another AGAIN
-  let lastAgainIndex = -1;
-  for (let i = filteredHistory.length - 1; i >= 0; i--) {
-    if (filteredHistory[i].score === QueueInteractionScore.AGAIN &&
-        (i === 0 || filteredHistory[i - 1].score !== QueueInteractionScore.AGAIN)) {
-      lastAgainIndex = i;
-      break;
+    if (!history || history.length === 0) return 0;
+
+    for (let i = history.length - 1; i >= 0; i--) {
+        const score = history[i].score;
+
+        if(score == QueueInteractionScore.TOO_EARLY || score == QueueInteractionScore.AGAIN)
+            return undefined;
+
+        if (score === QueueInteractionScore.HARD ||
+            score === QueueInteractionScore.GOOD ||
+            score === QueueInteractionScore.EASY) {
+            return card.nextRepetitionTime - getTimestamp(history[i].date);
+        }
     }
-  }
 
-  // If no valid AGAIN is found, return 0
-  if (lastAgainIndex === -1) return DEFAULT_AGAIN;
-
-  // Step 4: Find the previous HARD, GOOD, or EASY
-  let previousValidIndex = -1;
-  for (let i = lastAgainIndex - 1; i >= 0; i--) {
-    const score = filteredHistory[i].score;
-    if (score === QueueInteractionScore.HARD|| score === QueueInteractionScore.GOOD|| score === QueueInteractionScore.EASY) {
-      previousValidIndex = i;
-      break;
-    }
-  }
-
-  // If no previous valid score is found, return 0
-  if (previousValidIndex === -1) return DEFAULT_AGAIN;
-
-  // Step 5: Calculate the interval
-  const againRep = filteredHistory[lastAgainIndex];
-  const previousValid = filteredHistory[previousValidIndex];
-  if (againRep.scheduled !== undefined) {
-    return againRep.scheduled - getTimestamp(previousValid.date);
-  }
-
-  return DEFAULT_AGAIN; // Return 0 if scheduled is missing
+    return undefined;
 }
-  */
 
 export function formatMilliseconds(ms : number): string {
   if (ms === 0) return '0 seconds'; // Special case for zero
@@ -441,7 +419,14 @@ export async function getRemText(plugin: RNPlugin, rem: Rem, extentedName = fals
   //return processRichText(plugin, rem.text);
 }
 
+async function findOneCard(plugin: RNPlugin, cardId: string): Promise<Card | undefined> {
+  const currentQueueCards: Card[] = await plugin.storage.getSynced("currentQueueCards") || [];
+  return currentQueueCards.find(card => card._id === cardId);
+}
+
 async function onActivate(plugin: ReactRNPlugin) {
+
+  let currentCard: Card | undefined;
 
   await plugin.scheduler.registerCustomScheduler('SimplifiedSRS', []);
 
@@ -452,6 +437,8 @@ async function onActivate(plugin: ReactRNPlugin) {
     
       if(event.cardId) {
         await plugin.storage.setSynced("currentQueueCardId", event.cardId);
+
+        currentCard = await plugin.card.findOne(event.cardId);
 
         //
         /*
@@ -482,6 +469,35 @@ async function onActivate(plugin: ReactRNPlugin) {
       }
     }
   );
+
+  plugin.event.addListener(AppEvents.QueueCompleteCard, undefined,
+    async function onQueueCompleteCard(event: any) {
+      const cardId = event.cardId as string;
+  
+      // Fetch the card
+      const card = await plugin.card.findOne(cardId);
+  
+      if (card && card.repetitionHistory && card.repetitionHistory.length > 0) {
+        const lastScore = card.repetitionHistory[card.repetitionHistory.length - 1].score;
+  
+        if (
+          lastScore === QueueInteractionScore.HARD ||
+          lastScore === QueueInteractionScore.GOOD ||
+          lastScore === QueueInteractionScore.EASY
+        ) {
+          // Get the current array from storage
+          const currentQueueCardIds: string[] = (await plugin.storage.getSynced("currentQueueCardIds")) || [];
+  
+          // Remove the cardId from the array
+          const updatedQueueCardIds = currentQueueCardIds.filter(id => id !== cardId);
+  
+          // Save the updated array back to storage
+          await plugin.storage.setSynced("currentQueueCardIds", updatedQueueCardIds);
+        }
+      }
+    }
+  );  
+
   //
   await plugin.app.registerCallback<SpecialPluginCallback.SRSScheduleCard>(
     SpecialPluginCallback.SRSScheduleCard,
@@ -512,6 +528,9 @@ async function onActivate(plugin: ReactRNPlugin) {
     // The last repetition is the current answer
     const currentRep = history[history.length - 1];
 
+    // TAXING
+    //const currentCard = await plugin.card.findOne(args.cardId);
+
     // REMNOTE CALLS THIS MULTIPLE TIMES UNDER DIFFERENT SCENARIOS. CHECKING THIS FIXES ISSUES
     if(currentRep.score == QueueInteractionScore.AGAIN && currentCardId != args.cardId) {
       //console.log("Start of a new Card");
@@ -521,7 +540,9 @@ async function onActivate(plugin: ReactRNPlugin) {
 
     const isPreview = currentCardRepetitions == history.length ? true : false;
 
-    const lastWorkingInterval = isPreview && !(currentRep.score == QueueInteractionScore.AGAIN) ? getLastInterval(history.slice(0, -1)) : getLastInterval(history); // getLastInterval(repHistory); //
+    //const lastWorkingInterval = isPreview && !(currentRep.score == QueueInteractionScore.AGAIN) ? getLastInterval(history.slice(0, -1)) : getLastInterval(history); // getLastInterval(repHistory); //
+    //const lastWorkingInterval = getLastInterval(currentCard) ?? (isPreview && !(currentRep.score == QueueInteractionScore.AGAIN) ? getLastInterval_(history.slice(0, -1)) : getLastInterval_(history));
+    const lastWorkingInterval = getLastInterval(currentCard) ?? getLastInterval_(currentCard?.repetitionHistory);
 
     //console.log("Last Interval: " + formatMilliseconds(lastInterval));
 
@@ -602,110 +623,12 @@ async function onActivate(plugin: ReactRNPlugin) {
     //const randomization = (Math.random() - 0.5) * 0.4; // -0.2 to 0.2
     //nextInterval = nextInterval * (1 + randomization);
 
+    console.log("Last Interval: " + formatMilliseconds(lastWorkingInterval) + " New Interval: " + formatMilliseconds(nextInterval));
+
     const nextDate = Date.now() + nextInterval; //  MS_PER_DAY * 5;//
 
-    //
-    //const pluginData: Record<string, any> = {
-    //  "IntervalTransition" :  `${lastInterval}->${nextInterval}`
-    //};
-
-    //console.log((args.cardId ? args.cardId : "") + (isPreview ? "(Preview)" : "" + ": Interval: ") + formatMilliseconds(lastInterval) + " -> " + formatMilliseconds(nextInterval), currentRep.score);
-
-    //return { nextDate, pluginData};
     return { nextDate };
   }
-
-  async function getNextSpacingDate_(args: {
-    history: RepetitionStatus[];
-    schedulerParameters: Record<string, unknown>;
-    cardId: string | undefined;}) : Promise<{ nextDate: number }> {
-
-    //
-    await plugin.storage.setSynced("currentQueueCardId", args.cardId);
-
-    const { history } = args;
-    const currentRep = history[history.length - 1];
-    const lastInterval = getLastInterval(history);
-
-    // Constants for time in milliseconds
-    const MS_PER_MINUTE = 60 * 1000;
-    const MS_PER_HOUR = 60 * MS_PER_MINUTE;
-    const MS_PER_DAY = 24 * MS_PER_HOUR;
-
-    let nextInterval: number;
-
-    switch (currentRep.score) {
-    case QueueInteractionScore.TOO_EARLY:
-    case QueueInteractionScore.VIEWED_AS_LEECH:
-    // Fixed interval of 30 minutes, no randomization
-    nextInterval = 30 * MS_PER_MINUTE; // Remnote sets this to 1h 
-    break;
-
-    case QueueInteractionScore.AGAIN:
-    // Fixed interval of 1 hour, no randomization
-    nextInterval = 30 * MS_PER_MINUTE; //1 * MS_PER_HOUR;
-    break;
-
-    case QueueInteractionScore.RESET:
-    // Reset to a default interval of 1 day, no randomization
-    //nextInterval = 1 * MS_PER_DAY;
-    nextInterval = 0;
-    break;
-
-    case QueueInteractionScore.HARD:
-    case QueueInteractionScore.GOOD:
-    case QueueInteractionScore.EASY:
-    let baseInterval: number;
-    if (lastInterval === 0) {
-    // Fixed intervals for new cards or after reset
-    if (currentRep.score === QueueInteractionScore.HARD) {
-    baseInterval = 12 * MS_PER_HOUR; // 12 hours
-    } else if (currentRep.score === QueueInteractionScore.GOOD) {
-    baseInterval = 2 * MS_PER_DAY; // 2 days
-    } else { // EASY
-    baseInterval = 4 * MS_PER_DAY; // 4 days
-    }
-    } else {
-    // Adjust interval based on score and consecutive wrong answers
-    const wrongInRow = getWrongInRow(history);
-    if (wrongInRow === 0) {
-    // No consecutive AGAIN scores
-    const multipliers: { [key in QueueInteractionScore]?: number } = {
-    [QueueInteractionScore.HARD]: 0.75,
-    [QueueInteractionScore.GOOD]: 1.5,
-    [QueueInteractionScore.EASY]: 3,
-    };
-    baseInterval = lastInterval * (multipliers[currentRep.score] || 1);
-    } else {
-    // Reduce interval based on number of consecutive AGAIN scores
-    const denominators: { [key in QueueInteractionScore]?: number } = {
-    [QueueInteractionScore.HARD]: wrongInRow + 3,
-    [QueueInteractionScore.GOOD]: wrongInRow + 2,
-    [QueueInteractionScore.EASY]: wrongInRow + 1,
-    };
-    baseInterval = lastInterval / (denominators[currentRep.score] || 1);
-    }
-
-    // 6 h for old cards
-    baseInterval = Math.max(baseInterval, 6 * MS_PER_HOUR);
-    }
-    // Apply ±20% randomization
-    const randomization = (Math.random() - 0.5) * 0.4; // -0.2 to 0.2
-    nextInterval = baseInterval * (1 + randomization);
-
-    // Ensure minimum interval of 1 hour for skip and again
-    nextInterval = Math.max(nextInterval, 1 * MS_PER_HOUR);
-    break;
-
-    default:
-    // Fallback for unexpected scores
-    nextInterval = 1 * MS_PER_DAY;
-    break;
-    }
-
-    const nextDate = Date.now() + nextInterval;
-    return { nextDate };
-}
 }
 
 async function onDeactivate(_: ReactRNPlugin) {}
