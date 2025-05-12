@@ -1,4 +1,4 @@
-import { usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore
+import { usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn
 } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 //import { getLastInterval, getWrongInRow, formatMilliseconds } from ''
@@ -6,6 +6,17 @@ import MyRemNoteButton from '../components/MyRemNoteButton';
 
 // -> AbstractionAndInheritance
 const specialNames = ["Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Alias", "Bullet Icon"];
+
+// -> index
+// Constants for time in milliseconds
+const MS_PER_MINUTE = 60 * 1000;
+const MS_PER_HOUR = 60 * MS_PER_MINUTE;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
+
+const DEFAULT_AGAIN = 30 * MS_PER_MINUTE;
+const DEFAULT_HARD = 12 * MS_PER_HOUR;
+const DEFAULT_GOOD = 2 * MS_PER_DAY;
+const DEFAULT_EASY = 4 * MS_PER_DAY;
 
 // -> AbstractionAndInheritance
 async function isReferencingRem(plugin: RNPlugin, rem: Rem): Promise<boolean> {
@@ -142,55 +153,162 @@ function getTimestamp(date: Date | number): number {
 }
 
 // -> index.tsx
-function getLastInterval(history: RepetitionStatus[]): number {
-  let lastValidScheduled: number | undefined; // Most recent HARD, GOOD, EASY, or AGAIN
-  let secondLastPracticed: number | undefined; // Most recent preceding HARD, GOOD, or EASY
-  let foundAgainBetween = false;
+export function getLastRecordedInterval(history: RepetitionStatus[] | undefined): number {
+  
 
-  // Iterate from most recent to oldest
-  for (let i = history.length - 1; i >= 0; i--) {
-    const current = history[i];
-    const score = current.score;
+  if (!history || history.length === 0) return 0;
 
-    // Stop at RESET
-    if (score === QueueInteractionScore.RESET) {
-      return 0;
-    }
+  //console.log("History Length: " + history.length);
 
-    // Skip TOO_EARLY
-    if (score === QueueInteractionScore.TOO_EARLY) {
-      continue;
-    }
+  // Filter out TOO_EARLY scores
+  const filteredHistory = history.filter(rep => rep.score !== QueueInteractionScore.TOO_EARLY);
 
-    // Handle AGAIN
-    if (score === QueueInteractionScore.AGAIN) {
-      if (!lastValidScheduled) {
-        lastValidScheduled = current.scheduled; // Set as lastValidScheduled
-        foundAgainBetween = false;
-      } else {
-        foundAgainBetween = true; // AGAIN between valid repetitions
-      }
-      continue;
-    }
+  //console.log("Filtered History Length: " + filteredHistory.length);
 
-    // Handle HARD, GOOD, EASY
-    if (
-      score === QueueInteractionScore.HARD ||
-      score === QueueInteractionScore.GOOD ||
-      score === QueueInteractionScore.EASY
-    ) {
-      if (!lastValidScheduled) {
-        lastValidScheduled = current.scheduled; // First valid score encountered
-        foundAgainBetween = false;
-      } else if (!foundAgainBetween) {
-        secondLastPracticed = getTimestamp(current.date); // Second valid score
-        return lastValidScheduled - secondLastPracticed; // Calculate interval
-      }
+  // Find the index of the last RESET or AGAIN
+  let lastRestartIndex = -1;
+  for (let i = filteredHistory.length - 1; i >= 0; i--) {
+    if (filteredHistory[i].score === QueueInteractionScore.RESET || filteredHistory[i].score === QueueInteractionScore.AGAIN) { //  || filteredHistory[i].score === QueueInteractionScore.AGAIN
+      lastRestartIndex = i;
+      break;
     }
   }
 
-  // Return 0 if no valid interval is found
-  return 0;
+  // Consider history after the last restart
+  const relevantHistory = lastRestartIndex === -1 ? filteredHistory : filteredHistory.slice(lastRestartIndex + 1); // + 1
+
+  //console.log("Relevant History Length: " + relevantHistory.length);
+
+  if (relevantHistory.length === 0) return 0;
+
+  if (relevantHistory.length < 2) return 0; // Need at least 2 reps for a recorded interval
+
+  const cardX = relevantHistory[relevantHistory.length - 1]; // Last valid repetition
+  const cardXMinus1 = relevantHistory[relevantHistory.length - 2]; // Second-to-last valid repetition
+
+  // 
+  if(cardXMinus1.score == QueueInteractionScore.AGAIN)
+    return getLastIntervalBeforeAgain(history);
+
+  if (cardX.scheduled !== undefined) {
+    return cardX.scheduled - getTimestamp(cardXMinus1.date);
+  }
+
+  return 0; // Return 0 if scheduled is missing
+}
+
+export function getLastInterval(history: RepetitionStatus[] | undefined): number {
+  if (!history || history.length === 0) return 0;
+
+  const lastRep = history[history.length - 1];
+  let lastRecordedInterval = getLastRecordedInterval(history);
+
+  let currentInterval: number;
+
+  switch (lastRep.score) {
+    case QueueInteractionScore.RESET:
+      currentInterval = 0;
+      break;
+    case QueueInteractionScore.AGAIN:
+      //currentInterval = 30 * MS_PER_MINUTE; // 30 minutes
+      currentInterval = getLastIntervalBeforeAgain(history);
+      break;
+
+    case QueueInteractionScore.TOO_EARLY:
+    case QueueInteractionScore.HARD:
+    case QueueInteractionScore.GOOD:
+    case QueueInteractionScore.EASY:
+      if (lastRecordedInterval === 0) {
+        const prevRep = history[history.length-2];
+
+        // RECOVER FROM AGAIN: 2nd TRY AFTER
+        if(prevRep && prevRep.score == QueueInteractionScore.AGAIN) {
+          const wrongInRow = getWrongInRow(history);
+          lastRecordedInterval = getLastIntervalBeforeAgain(history);
+          const denominators: { [key in QueueInteractionScore]?: number } = {
+            [QueueInteractionScore.HARD]: wrongInRow + 3,
+            [QueueInteractionScore.GOOD]: wrongInRow + 2,
+            [QueueInteractionScore.EASY]: wrongInRow + 1,
+          };
+          //console.log("New Interval would be " + formatMilliseconds(lastInterval / (denominators[currentRep.score] || 1)));
+
+          currentInterval = Math.max(DEFAULT_HARD, lastRecordedInterval / (denominators[lastRep.score] || 1));
+
+          //console.log("We recover from an AGAIN score: Interval Before AGAIN: " + formatMilliseconds(lastRecordedInterval) + " Current Interval: " + formatMilliseconds(currentInterval));
+          return currentInterval;
+        }
+        // NEW CARD
+        // No prior interval: use fixed values
+        if (lastRep.score === QueueInteractionScore.HARD) {
+          currentInterval = 12 * MS_PER_HOUR; // 12 hours
+        } else if (lastRep.score === QueueInteractionScore.GOOD) {
+          currentInterval = 2 * MS_PER_DAY; // 2 days
+        } else {
+          currentInterval = 4 * MS_PER_DAY; // 4 days
+        }
+      } else {
+        // Combine second-to-last interval with score
+        const multipliers: { [key in QueueInteractionScore]?: number } = {
+          [QueueInteractionScore.HARD]: 0.75, // Reduce interval
+          [QueueInteractionScore.GOOD]: 1.5,  // Increase moderately
+          [QueueInteractionScore.EASY]: 3,    // Increase significantly
+        };
+        currentInterval = lastRecordedInterval * (multipliers[lastRep.score] || 1);
+        currentInterval = Math.max(currentInterval, 6 * MS_PER_HOUR); // Minimum 6 hours
+      }
+      break;
+
+    default:
+      currentInterval = 1 * MS_PER_DAY; // Default: 1 day
+      break;
+  }
+
+  //console.log("Last Recorded Interval: " + formatMilliseconds(lastRecordedInterval) + " Current Interval: " + formatMilliseconds(currentInterval));
+
+  return currentInterval;
+}
+
+export function getLastIntervalBeforeAgain(history: RepetitionStatus[] | undefined): number {
+  // Step 1: Validate input
+  if (!history || history.length < 2) return DEFAULT_AGAIN;
+
+  // Step 2: Filter out irrelevant scores (e.g., TOO_EARLY)
+  const filteredHistory = history.filter(rep => rep.score !== QueueInteractionScore.TOO_EARLY);
+
+  // Step 3: Find the last AGAIN not preceded by another AGAIN
+  let lastAgainIndex = -1;
+  for (let i = filteredHistory.length - 1; i >= 0; i--) {
+    if (filteredHistory[i].score === QueueInteractionScore.AGAIN &&
+        (i === 0 || filteredHistory[i - 1].score !== QueueInteractionScore.AGAIN)) {
+      lastAgainIndex = i;
+      break;
+    }
+  }
+
+  // If no valid AGAIN is found, return 0
+  if (lastAgainIndex === -1) return DEFAULT_AGAIN;
+
+  // Step 4: Find the previous HARD, GOOD, or EASY
+  let previousValidIndex = -1;
+  for (let i = lastAgainIndex - 1; i >= 0; i--) {
+    const score = filteredHistory[i].score;
+    if (score === QueueInteractionScore.HARD|| score === QueueInteractionScore.GOOD|| score === QueueInteractionScore.EASY) {
+      previousValidIndex = i;
+      break;
+    }
+  }
+
+  // If no previous valid score is found, return 0
+  if (previousValidIndex === -1) return DEFAULT_AGAIN;
+
+  // Step 5: Calculate the interval
+  const againRep = filteredHistory[lastAgainIndex];
+  const previousValid = filteredHistory[previousValidIndex];
+  if (againRep.scheduled !== undefined) {
+    return againRep.scheduled - getTimestamp(previousValid.date);
+  }
+
+  return DEFAULT_AGAIN; // Return 0 if scheduled is missing
 }
 
 // -> index.tsx
@@ -250,7 +368,25 @@ async function getCardsOfReferences(plugin: RNPlugin, rem: Rem, processed = new 
     const remCards = await rem.getCards();
     cards = cards.concat(remCards);
 
-    const children = [...await getCleanChildren(plugin, rem), ...await rem.remsReferencingThis()];
+    const childrenRem = await getCleanChildren(plugin, rem);
+    const childrenRef = await rem.remsReferencingThis();
+
+    // Check for Questions where the Ref appears as an Answer. Then add that question
+    for (const r of childrenRef) {
+        if (await r.isCardItem()) {
+            const question = await r.getParentRem();
+            if (question) {
+                const questionId = question._id;
+                const isQuestionInCards = cards.some(card => card.remId === questionId);
+                if (!isQuestionInCards) {
+                    const questionCards = await question.getCards();
+                    cards = cards.concat(questionCards);
+                }
+            }
+        }
+    }
+
+    const children = [...childrenRem, ...childrenRef];
 
     for (const child of children) {
         const childCards = await getCardsOfReferences(plugin, child, processed);
@@ -267,6 +403,8 @@ function CustomQueueWidget() {
     const [cardIds, setCardIds] = useState<string[]>([]);
     const [cards, setCards] = useState<Card[]>([]);
     const [currentCardId, setCurrentCardId] = useState<string | undefined>(undefined);
+    const [currentCardLastInterval, setCurrentCardLastInterval] = useState<string>("");
+    const [currentCardWrongInRow, setCurrentCardWrongInRow] = useState<number>(0);
     const [focusedRemText, setFocusedRemText] = useState<string>('');
     const [isTableExpanded, setIsTableExpanded] = useState<boolean>(false);
 
@@ -305,25 +443,40 @@ function CustomQueueWidget() {
         const currentFocusedRem = await plugin.focus.getFocusedRem();
         if (currentFocusedRem) {
             setFocusedRem(currentFocusedRem);
+
+            //
+            handleQueueClick();
+
+            setIsTableExpanded(false); // Collapse the table. Default
         } else {
             setFocusedRem(undefined);
             setLoading(false);
         }
     };
 
+    // Update Card Info
     const handleQueueClick = async () => {
         const syncedCardId = await plugin.storage.getSynced<string>('currentQueueCardId');
         if (syncedCardId) {
             setCurrentCardId(syncedCardId);
+
+            const currentCard = cards.find((card) => card._id === currentCardId);
+            if(currentCard && currentCard.repetitionHistory) {
+                setCurrentCardLastInterval(formatMilliseconds(getLastInterval(currentCard.repetitionHistory)));
+                setCurrentCardWrongInRow(getWrongInRow(currentCard.repetitionHistory))
+            }
         }
-        setIsTableExpanded(false); // Collapse the table
+        //setIsTableExpanded(false); // Collapse the table
     };
 
     const toggleTableExpansion = () => {
         setIsTableExpanded(!isTableExpanded);
+
+        //
+        handleQueueClick();
     };
 
-    const currentCard = cards.find((card) => card._id === currentCardId);
+    //const currentCard = cards.find((card) => card._id === currentCardId);
 
     return (
         <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10 }}>
@@ -340,38 +493,31 @@ function CustomQueueWidget() {
         ) : (
         focusedRem && cardIds.length > 0 ? (
             <div style={{ paddingRight: '20px' }}>
-            {currentCard && (
                 <div>
                     <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
-                        {isTableExpanded ? '-' : '+'}
+                        {isTableExpanded ? '-' + " Card Information" : '+' + " Card Information"}
                     </button>
                     {isTableExpanded && (
                         <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 10 }}>
                         <thead>
                             <tr>
-                            <th style={{ border: '1px solid #ddd', padding: 8, textAlign: 'left' }}>Card</th>
                             <th style={{ border: '1px solid #ddd', padding: 8, textAlign: 'left' }}>Last Interval</th>
-                            <th style={{ border: '1px solid #ddd', padding: 8, textAlign: 'left' }}>Wrong Answers</th>
+                            <th style={{ border: '1px solid #ddd', padding: 8, textAlign: 'left' }}>Wrong Answers In A Row</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr>
-                            <td style={{ border: '1px solid #ddd', padding: 8 }}>Current Card</td>
                             <td style={{ border: '1px solid #ddd', padding: 8 }}>
-                                {currentCard.repetitionHistory ? formatMilliseconds(getLastInterval(currentCard.repetitionHistory)) : "New Card"}
+                                {currentCardLastInterval}
                             </td>
                             <td style={{ border: '1px solid #ddd', padding: 8 }}>
-                                {currentCard.repetitionHistory ? getWrongInRow(currentCard.repetitionHistory) : 0}
+                                {currentCardWrongInRow}
                             </td>
                             </tr>
                         </tbody>
                         </table>
                     )}
                 </div>
-            )}
-            {!currentCard && (
-                <div style={{ marginBottom: 10 }}>No card currently active in the queue.</div>
-            )}
             <div onClick={handleQueueClick} style={{ cursor: 'pointer' }}>
                 <Queue key={focusedRem._id} cardIds={cardIds} width={"100%"} maxHeight={"100%"} />
             </div>
