@@ -132,227 +132,6 @@ async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
 return cleanChildren;
 }
 
-// IMPORT DOESNT WORK! WHY? 
-
-// -> index.tsx
-function getTimestamp(date: Date | number): number {
-  return typeof date === 'number' ? date : date.getTime();
-}
-
-// -> index.tsx
-export function getLastRecordedInterval(history: RepetitionStatus[] | undefined): number {
-  if (!history || history.length < 2) return 0;
-
-  // Find the index of the last RESET
-  let lastResetIndex = -1;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].score === QueueInteractionScore.RESET) {
-      lastResetIndex = i;
-      break;
-    }
-  }
-
-  // Consider history after the last RESET
-  const relevantHistory = lastResetIndex === -1 ? history : history.slice(lastResetIndex + 1);
-
-  if (relevantHistory.length < 2) return 0;
-
-  // Define type A and type B
-  function isTypeA(score: QueueInteractionScore): boolean {
-    return (
-      score === QueueInteractionScore.HARD ||
-      score === QueueInteractionScore.GOOD ||
-      score === QueueInteractionScore.EASY
-    );
-  }
-
-  function isTypeB(score: QueueInteractionScore): boolean {
-    return (
-      score === QueueInteractionScore.TOO_EARLY ||
-      score === QueueInteractionScore.AGAIN
-    );
-  }
-
-  // Check the last two elements
-  const lastIndex = relevantHistory.length - 1;
-  const secondLastIndex = lastIndex - 1;
-  const lastScore = relevantHistory[lastIndex].score;
-  const secondLastScore = relevantHistory[secondLastIndex].score;
-
-  if (isTypeA(lastScore) && isTypeA(secondLastScore)) {
-    const cardX = relevantHistory[lastIndex];
-    const cardXMinus1 = relevantHistory[secondLastIndex];
-    if (cardX.scheduled !== undefined) {
-      return cardX.scheduled - getTimestamp(cardXMinus1.date);
-    }
-    return 0;
-  }
-
-  // Find the last type B not preceded by another type B
-  let typeBIndex = -1;
-  for (let i = relevantHistory.length - 1; i >= 0; i--) {
-    if (isTypeB(relevantHistory[i].score) && (i === 0 || !isTypeB(relevantHistory[i - 1].score))) {
-      typeBIndex = i;
-      break;
-    }
-  }
-
-  if (typeBIndex === -1) return 0; // No suitable type B found
-
-  // Find the previous type A before the type B
-  let typeAIndex = -1;
-  for (let i = typeBIndex - 1; i >= 0; i--) {
-    if (isTypeA(relevantHistory[i].score)) {
-      typeAIndex = i;
-      break;
-    }
-  }
-
-  if (typeAIndex === -1) return 0; // No type A before type B
-
-  // Calculate interval
-  const cardX = relevantHistory[typeBIndex];
-  const cardXMinus1 = relevantHistory[typeAIndex];
-  if (cardX.scheduled !== undefined) {
-    return cardX.scheduled - getTimestamp(cardXMinus1.date);
-  }
-  return 0;
-}
-
-// -> index.tsx
-function isInRecovery(history: RepetitionStatus[]): boolean {
-  for (let i = history.length - 1; i >= 0; i--) {
-      const score = history[i].score;
-      if (score !== QueueInteractionScore.TOO_EARLY) {
-          return score === QueueInteractionScore.AGAIN;
-      }
-  }
-  return false; // All scores are TOO_EARLY or history is empty
-}
-
-// -> index.tsx
-export function getWrongInRow(history: RepetitionStatus[]) : number {
-  let t = 0
-
-  // 
-  if(history.length < 1)
-    return t;
-
-  for (let i = history.length - 2; i >= 0; i--) {
-    if (history[i].score === QueueInteractionScore.AGAIN || history[i].score === QueueInteractionScore.TOO_EARLY) {
-      if(history[i].score === QueueInteractionScore.AGAIN)
-        t++;
-    } else {
-        break;
-    }
-}
-
-  return t;
-}
-
-// -> index.tsx
-export function getLastInterval_(history: RepetitionStatus[] | undefined): number {
-  // New Card
-  if (!history || history.length === 0) return 0;
-
-  const lastRep = history[history.length - 1];
-
-  let lastRecordedInterval = getLastRecordedInterval(history);
-
-  // Recalculate Current Working Interval From Recorded Interval and Last Score
-  let currentInterval: number = 0;
-
-  switch (lastRep.score) {
-    case QueueInteractionScore.RESET:
-      currentInterval = 0;
-      break;
-      case QueueInteractionScore.TOO_EARLY:
-      case QueueInteractionScore.AGAIN:
-      //currentInterval = 30 * MS_PER_MINUTE; // 30 minutes
-      //console.log("HELLO?");
-      currentInterval = lastRecordedInterval; //getLastIntervalBeforeAgain(history);
-      break;
-
-    //case QueueInteractionScore.TOO_EARLY:
-    case QueueInteractionScore.HARD:
-    case QueueInteractionScore.GOOD:
-    case QueueInteractionScore.EASY:
-      // A
-      // RECOVER FROM AGAIN: Recalculate after 2nd try
-      // TODO: function isInRecovery -> there could be TOO_EARLY after the inital AGAIN, e.g. A A AGAIN TOO_EARLY TOO_EARLY
-      //const prevRep = history[history.length-2];
-      //if(prevRep && prevRep.score == QueueInteractionScore.AGAIN) {
-      if(isInRecovery(history.slice(0, -1))) {
-        const wrongInRow = getWrongInRow(history.slice(0, -1));
-        //lastRecordedInterval = getLastIntervalBeforeAgain(history);
-        const denominators: { [key in QueueInteractionScore]?: number } = {
-          [QueueInteractionScore.HARD]: wrongInRow + 3,
-          [QueueInteractionScore.GOOD]: wrongInRow + 2,
-          [QueueInteractionScore.EASY]: wrongInRow + 1,
-        };
-        currentInterval = Math.max(DEFAULT_HARD, lastRecordedInterval / (denominators[lastRep.score] || 1));
-        break;
-      }
-      //console.log("New Interval would be " + formatMilliseconds(lastInterval / (denominators[currentRep.score] || 1)));
-
-      // B
-      // 1 Card in History. Recalculate Interval
-      // It was the first Card. Use fixed values
-      if(lastRecordedInterval == 0) {
-        if (lastRep.score === QueueInteractionScore.HARD) {
-          currentInterval = 12 * MS_PER_HOUR; // 12 hours
-        } else if (lastRep.score === QueueInteractionScore.GOOD) {
-          currentInterval = 2 * MS_PER_DAY; // 2 days
-        } else if (lastRep.score === QueueInteractionScore.EASY){
-          currentInterval = 4 * MS_PER_DAY; // 4 days
-        }
-      } else {
-        // C
-        // Combine last interval with score
-        const multipliers: { [key in QueueInteractionScore]?: number } = {
-          [QueueInteractionScore.HARD]: 0.75, // Reduce interval
-          [QueueInteractionScore.GOOD]: 1.5,  // Increase moderately
-          [QueueInteractionScore.EASY]: 3,    // Increase significantly
-        };
-        currentInterval = lastRecordedInterval * (multipliers[lastRep.score] || 1);
-        currentInterval = Math.max(currentInterval, 6 * MS_PER_HOUR); // Minimum 6 hours
-      }
-
-      break;
-
-    default:
-      currentInterval = 1 * MS_PER_DAY; // Default: 1 day
-      break;
-  }
-
-  //console.log("Last Recorded Working Interval: " + formatMilliseconds(lastRecordedInterval) + " Current Working Interval: " + formatMilliseconds(currentInterval));
-
-  return currentInterval;
-}
-
-function getLastInterval(card: Card | undefined): number | undefined {
-    if (!card || !card.nextRepetitionTime) return 0;
-
-    const history = card.repetitionHistory;
-
-    if (!history || history.length === 0) return 0;
-
-    for (let i = history.length - 1; i >= 0; i--) {
-        const score = history[i].score;
-
-        if(score == QueueInteractionScore.TOO_EARLY || score == QueueInteractionScore.AGAIN)
-            return undefined;
-
-        if (score === QueueInteractionScore.HARD ||
-            score === QueueInteractionScore.GOOD ||
-            score === QueueInteractionScore.EASY) {
-            return card.nextRepetitionTime - getTimestamp(history[i].date);
-        }
-    }
-
-    return undefined;
-}
-
 // -> index.tsx
 function formatMilliseconds(ms : number): string {
   if (ms === 0) return 'New Card'; // Special case for zero // "0 seconds"
@@ -389,14 +168,6 @@ function formatMilliseconds(ms : number): string {
   const plural = value !== 1 ? 's' : '';
   //return `${value} ${unit}${plural}`;
   return value + " " + unit + plural;
-}
-
-function formatTimeStamp(timestamp: number): string {
-    const date = new Date(timestamp); // No * 1000 needed
-    const day = date.getDate().toString().padStart(2, '0');
-    const month = (date.getMonth() + 1).toString().padStart(2, '0'); // +1 because getMonth() is 0-based
-    const year = date.getFullYear().toString();
-    return `${day}.${month}.${year}`;
 }
 
 async function getCardsOfReferences(plugin: RNPlugin, rem: Rem, processed = new Set()) {
@@ -438,88 +209,18 @@ async function getCardsOfReferences(plugin: RNPlugin, rem: Rem, processed = new 
     return cards;
 }
 
-function getRepetitionTiming(card: Card) {
-    if(card.nextRepetitionTime) {
+async function getCardsOfReferencesDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
+  const allCards = await getCardsOfReferences(plugin, rem);
 
-        //console.log("Now: " + formatTimeStamp(Date.now()) + " nextRepetition: " + formatTimeStamp(card.nextRepetitionTime));
+  console.log("allCards: " + allCards.length);
 
-        return card.nextRepetitionTime - Date.now();
-    }
-    else
-        return 0;
-}
+  const dueCards = allCards.filter(card => {
+    return card.nextRepetitionTime === undefined || 
+           (typeof card.nextRepetitionTime === 'number' && card.nextRepetitionTime <= Date.now());
+  });
 
-/*
-function getLastIntervals_(history: RepetitionStatus[] | undefined): string {
-    if (!history || history.length === 0) return "No intervals";
-  
-    const intervals: number[] = [];
-    let tempHistory = [...history]; // Create a copy of the history
-  
-    for (let i = 0; i < 5; i++) {
-      if (tempHistory.length === 0) break;
-      const interval = getLastInterval(tempHistory);
-      intervals.unshift(interval); // Add to beginning for oldest-to-newest order
-      tempHistory = tempHistory.slice(0, -1); // Remove last repetition
-    }
-  
-    // Format intervals into a string
-    const formattedIntervals = intervals.map(interval => formatMilliseconds(interval)).join(" -> ");
-    return formattedIntervals;
-}
-
-function getLastIntervals(card: Card): string {
-    const history = card.repetitionHistory;
-
-    if (!history || history.length === 0) return "No intervals";
-  
-    const intervals: number[] = [];
-    let tempHistory = [...history]; // Create a copy of the history
-  
-    for (let i = 0; i < 5; i++) {
-      if (tempHistory.length === 0) break;
-      const interval = getLastInterval(tempHistory);
-      intervals.unshift(interval); // Add to beginning for oldest-to-newest order
-      tempHistory = tempHistory.slice(0, -1); // Remove last repetition
-    }
-  
-    // Format intervals into a string
-    const formattedIntervals = intervals.map(interval => formatMilliseconds(interval)).join(" -> ");
-    return formattedIntervals;
-}
-    */
-
-function getLastRatingStr(history: RepetitionStatus[] | undefined): string {
-    // Handle undefined or empty array
-    if (!history || history.length === 0) {
-        return "";
-    }
-
-    // Iterate from the last element to the first
-    for (let i = history.length - 1; i >= 0; i--) {
-        const score = history[i].score;
-        // Skip TOO_EARLY and VIEWED_AS_LEECH
-        if (score !== QueueInteractionScore.TOO_EARLY && score !== QueueInteractionScore.VIEWED_AS_LEECH) {
-            switch (score) {
-                case QueueInteractionScore.AGAIN:
-                    return "Forgot";
-                case QueueInteractionScore.HARD:
-                    return "Partially recalled";
-                case QueueInteractionScore.GOOD:
-                    return "Recalled with effort";
-                case QueueInteractionScore.EASY:
-                    return "Easily recalled";
-                case QueueInteractionScore.RESET:
-                    return "Reset";
-                default:
-                    // Handle unexpected scores (though unlikely with enum)
-                    return "";
-            }
-        }
-    }
-
-    // Return empty string if all scores are TOO_EARLY or VIEWED_AS_LEECH
-    return "";
+  console.log("dueCards: " + dueCards.length);
+  return dueCards;
 }
 
 async function loadCards(plugin: RNPlugin, rem: Rem | undefined, cardIds: string[]): Promise<Card[]> {
@@ -530,6 +231,54 @@ async function loadCards(plugin: RNPlugin, rem: Rem | undefined, cardIds: string
     const cardIdSet = new Set(cardIds);
     const filteredCards = allCards.filter(card => cardIdSet.has(card._id));
     return filteredCards;
+}
+
+function getLastRatingStr(history: RepetitionStatus[] | undefined): string {
+  // Handle undefined or empty array
+  if (!history || history.length === 0) {
+      return "";
+  }
+
+  // Iterate from the last element to the first
+  for (let i = history.length - 1; i >= 0; i--) {
+      const score = history[i].score;
+      // Skip TOO_EARLY and VIEWED_AS_LEECH
+      if (score !== QueueInteractionScore.TOO_EARLY && score !== QueueInteractionScore.VIEWED_AS_LEECH) {
+          switch (score) {
+              case QueueInteractionScore.AGAIN:
+                  return "Forgot";
+              case QueueInteractionScore.HARD:
+                  return "Partially recalled";
+              case QueueInteractionScore.GOOD:
+                  return "Recalled with effort";
+              case QueueInteractionScore.EASY:
+                  return "Easily recalled";
+              case QueueInteractionScore.RESET:
+                  return "Reset";
+              default:
+                  // Handle unexpected scores (though unlikely with enum)
+                  return "";
+          }
+      }
+  }
+
+  // Return empty string if all scores are TOO_EARLY or VIEWED_AS_LEECH
+  return "";
+}
+
+export function getLastInterval(history: RepetitionStatus[] | undefined): {workingInterval: number, intervalSetOn: number} | undefined {
+  if (!history || history.length === 0) {
+      return undefined;
+  }
+
+  for (let i = history.length - 1; i >= 0; i--) {
+      const repetition = history[i];
+      if (repetition.pluginData && typeof repetition.pluginData.workingInterval === 'number' && typeof repetition.pluginData.intervalSetOn === 'number') {
+          return { workingInterval: repetition.pluginData.workingInterval , intervalSetOn: repetition.pluginData.intervalSetOn};
+      }
+  }
+
+  return undefined;
 }
 
 function CustomQueueWidget() {
@@ -564,27 +313,12 @@ function CustomQueueWidget() {
       };
       initFromStorage();
     }, [plugin]);
-  
+
     // Event listener for card updates
     useEffect(() => {
       const handleQueueLoadCard = async (event: any) => {
-        const cardId = event.cardId;
-        if (cardId) {
-          setCurrentCardId(cardId);
-          await plugin.storage.setSynced("currentQueueCardId", cardId);
-          const currentCard = await plugin.card.findOne(cardId);
-          if (currentCard) {
-            //setCurrentCardLastInterval(getLastIntervals(currentCard.repetitionHistory));
-            const lastInterval = getLastInterval(currentCard) ?? getLastInterval_(currentCard.repetitionHistory);
-            
-            setCurrentCardLastInterval(formatMilliseconds(lastInterval)); // getLastIntervals(currentCard)
-            if(lastInterval != 0)
-                setcurrentCardRepetitionTiming(getRepetitionTiming(currentCard));
-            else
-                setcurrentCardRepetitionTiming(0);
-            setcurrentCardLastRating(getLastRatingStr(currentCard.repetitionHistory));
-          }
-        }
+    
+        updateCardInfo(event.cardId);
       };
   
       plugin.event.addListener(AppEvents.QueueLoadCard, undefined, handleQueueLoadCard);
@@ -629,25 +363,50 @@ function CustomQueueWidget() {
             updateQueue();
         }
     };
+
+    const loadCurrentRemQueueDue = async () => {
+      setLoading(true);
+      const currentFocusedRem = await plugin.focus.getFocusedRem();
+
+      if (currentFocusedRem) {
+          const updateQueue = async () => {
+          setLoading(true);
+          const fetchedCards = await getCardsOfReferencesDue(plugin, currentFocusedRem);
+          const ids = fetchedCards.map((c) => c._id);
+          setCardIds(ids);
+          setCards(fetchedCards);
+          await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
+          await plugin.storage.setSynced("currentQueueCardIds", ids);
+
+          setLoading(false);
+          setFocusedRem(currentFocusedRem);
+          setIsTableExpanded(false);
+          };
+          updateQueue();
+      }
+  };
   
-    const updateCardInfo = async () => {
-      const syncedCardId = await plugin.storage.getSynced<string>("currentQueueCardId");
-      if (syncedCardId) {
-        setCurrentCardId(syncedCardId);
-        const currentCard = await plugin.card.findOne(syncedCardId);
-        if (currentCard) { // && currentCard.repetitionHistory
-            const lastInterval = getLastInterval(currentCard) ?? getLastInterval_(currentCard.repetitionHistory);
-            
-            setCurrentCardLastInterval(formatMilliseconds(lastInterval)); // getLastIntervals(currentCard)
-            if(lastInterval != 0)
-                setcurrentCardRepetitionTiming(getRepetitionTiming(currentCard));
-            else
-                setcurrentCardRepetitionTiming(0);
-          setcurrentCardLastRating(getLastRatingStr(currentCard.repetitionHistory));
-          setCurrentCardText(await getRemText(plugin, await currentCard.getRem())); // 
-        }
+    const updateCardInfo = async (cardId = undefined) => {
+      const id = cardId ?? await plugin.storage.getSynced<string>("currentQueueCardId");
+      if (id) {
+        setCurrentCardId(id);
+        const currentCard = await plugin.card.findOne(id);
+        const rem = await currentCard?.getRem();
+
+        //console.log("Current Card: " + await getRemText(plugin, rem));
+
+        //const cardInterval = await plugin.storage.getSynced<number>("currentQueueCardInterval") ?? 0;
+        const lastInterval = getLastInterval(currentCard?.repetitionHistory)
+
+        setCurrentCardLastInterval(lastInterval ? formatMilliseconds(lastInterval.workingInterval) : "");
+        setcurrentCardRepetitionTiming(lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() : 0);
+        setcurrentCardLastRating(getLastRatingStr(currentCard?.repetitionHistory));
       }
     };
+
+    async function onMouseClick() {
+      updateCardInfo();
+    }
   
     // Rest of your component (loadCurrentRemQueue, JSX, etc.) remains unchanged
     const openQueueRem = async () => {
@@ -657,68 +416,71 @@ function CustomQueueWidget() {
         }
       };
   
-      const openFlashCardRem = async () => {
-          const currentCard = cards.find((card) => card._id === currentCardId);
-          const rem = await currentCard?.getRem();
-          if (rem) {
-            await plugin.window.openRem(rem);
-          }
-        };
-    
-      const toggleTableExpansion = () => {
-        setIsTableExpanded(!isTableExpanded);
-        updateCardInfo();
+    const openFlashCardRem = async () => {
+        const currentCard = cards.find((card) => card._id === currentCardId);
+        const rem = await currentCard?.getRem();
+        if (rem) {
+          await plugin.window.openRem(rem);
+        }
       };
-    
-      return (
-        <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ paddingRight: "20px" }}>Current Queue: {focusedRemText || "No Rem selected"} <MyRemNoteButton text="" onClick={openQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" /></div> 
-            <MyRemNoteButton text="Load New Queue from Rem" onClick={loadCurrentRemQueue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
+  
+    const toggleTableExpansion = () => {
+      setIsTableExpanded(!isTableExpanded);
+      updateCardInfo();
+    };
+  
+    return (
+      <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ paddingRight: "20px" }}>Current Queue: {focusedRemText || "No Rem selected"} <MyRemNoteButton text="" onClick={openQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" /></div> 
+          <div style={{ paddingRight: "20px" }}>Practice Flashcards from Rem: 
+            <MyRemNoteButton text="All" onClick={loadCurrentRemQueue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
+            <MyRemNoteButton text="Due" onClick={loadCurrentRemQueueDue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
           </div>
-          {loading ? (
-            <div>Loading flashcards...</div>
-          ) : cardIds.length > 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", flex: "1", overflow: "auto" }}>
-              <div style={{ marginTop: "10px" }}>
-                <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
-                  {isTableExpanded ? "- Card Information: " : "+ Card Information: "}{currentCardText}
-                </button>
-                <MyRemNoteButton text="" onClick={openFlashCardRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
-                {isTableExpanded && (
-                  <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 10 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Date</th>
-                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Interval</th>
-                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Rating</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                          {currentCardRepetitionTiming == 0
-                            ? ""
-                            : currentCardRepetitionTiming < 0
-                            ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")"
-                            : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}
-                        </td>
-                        <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastInterval}</td>
-                        <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastRating}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                )}
-              </div>
-              <div /*onClick={updateCardInfo}*/ style={{ cursor: "pointer" }}>
-                <Queue cardIds={cardIds} width={"100%"} maxWidth={"100%"} />
-              </div>
-            </div>
-          ) : (
-            <div>No cards to display. CardIds is empty: {JSON.stringify(cardIds)}</div>
-          )}
         </div>
-      );
-  }
+        {loading ? (
+          <div>Loading flashcards...</div>
+        ) : cardIds.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", flex: "1", overflow: "auto" }}>
+            <div style={{ marginTop: "10px" }}>
+              <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
+                {isTableExpanded ? "- Card Information: " : "+ Card Information: "}{currentCardText}
+              </button>
+              <MyRemNoteButton text="" onClick={openFlashCardRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
+              {isTableExpanded && (
+                <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 10 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Date</th>
+                      <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Interval</th>
+                      <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Rating</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                        {currentCardRepetitionTiming == 0
+                          ? ""
+                          : currentCardRepetitionTiming < 0
+                          ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")"
+                          : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}
+                      </td>
+                      <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastInterval}</td>
+                      <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastRating}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div onClick={onMouseClick} style={{ cursor: "pointer" }}>
+              <Queue cardIds={cardIds} width={"100%"} maxWidth={"100%"} />
+            </div>
+          </div>
+        ) : (
+          <div>No cards to display. CardIds is empty: {JSON.stringify(cardIds)}</div>
+        )}
+      </div>
+    );
+}
 
 renderWidget(CustomQueueWidget);
