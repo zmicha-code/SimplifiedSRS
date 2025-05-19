@@ -1,4 +1,4 @@
-import { usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn, AppEvents
+import { usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn, AppEvents, BuiltInPowerupCodes
 } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 //import { getLastInterval, getWrongInRow, formatMilliseconds } from ''
@@ -6,7 +6,9 @@ import MyRemNoteButton from '../components/MyRemNoteButton';
 import { format } from 'path';
 
 // -> AbstractionAndInheritance
-const specialNames = ["Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Alias", "Bullet Icon"];
+export const specialNames = ["Collapse Tag Configure Options", "Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Alias", "Aliases", "Bullet Icon"]; // , "Definition", "Eigenschaften"
+
+export const specialNameParts = ["query:", "contains:"];
 
 // -> index
 // Constants for time in milliseconds
@@ -132,6 +134,39 @@ async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
 return cleanChildren;
 }
 
+// -> AbstractionAndInheritance
+export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  // Fetch direct children and referencing Rems
+  const childrenRems = await rem.getChildrenRem();
+  const referencingRems = await rem.remsReferencingThis();
+  const allRems = [...childrenRems, ...referencingRems];
+
+  // Remove duplicates based on Rem _id
+  const uniqueRemsMap = new Map<string, Rem>();
+  for (const r of allRems) {
+    if (!uniqueRemsMap.has(r._id)) {
+      uniqueRemsMap.set(r._id, r);
+    }
+  }
+  const uniqueRems = Array.from(uniqueRemsMap.values());
+
+  // Fetch texts concurrently for efficiency
+  const texts = await Promise.all(uniqueRems.map(r => getRemText(plugin, r)));
+
+  // Apply the same filtering as getCleanChildren
+  const cleanRems: Rem[] = [];
+  for (let i = 0; i < uniqueRems.length; i++) {
+    const text = texts[i];
+    if (
+      !specialNames.includes(text) &&
+      !specialNameParts.some(part => text.startsWith(part))
+    ) {
+      cleanRems.push(uniqueRems[i]);
+    }
+  }
+  return cleanRems;
+}
+
 // -> index.tsx
 function formatMilliseconds(ms : number): string {
   if (ms === 0) return 'New Card'; // Special case for zero // "0 seconds"
@@ -170,7 +205,7 @@ function formatMilliseconds(ms : number): string {
   return value + " " + unit + plural;
 }
 
-async function getCardsOfReferences(plugin: RNPlugin, rem: Rem, processed = new Set()) {
+async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) {
     if (processed.has(rem._id)) {
         return [];
     }
@@ -179,14 +214,34 @@ async function getCardsOfReferences(plugin: RNPlugin, rem: Rem, processed = new 
     let cards: Card[] = [];
 
     const remCards = await rem.getCards();
-    cards = cards.concat(remCards);
 
-    const childrenRem = await getCleanChildren(plugin, rem);
-    const childrenRef = await rem.remsReferencingThis();
+    cards = cards.concat(remCards);
+    
+    // A Reference appears in the Answer of a Flashcard
+    const childrenRem = await getCleanChildrenAll(plugin, rem);
+    for(const c of childrenRem) {
+      const refs = await c.remsBeingReferenced();
+
+      if (refs.length > 0 && (await c.isCardItem() || await c.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))) { // 
+        const ref= refs[0];
+
+        // If the Ref is a Flashcard, add it.
+        if((await ref.getCards()).length > 0) {
+          const isQuestionInCards = cards.some(card => card.remId === ref._id);
+            if (!isQuestionInCards) {
+                const questionCards = await ref.getCards();
+                cards = cards.concat(questionCards);
+            }
+        }
+
+        // TODO: What to do if the Ref is a Concept?
+      }
+    }
 
     // Check for Questions where the Ref appears as an Answer. Then add that question
+    const childrenRef = await rem.remsReferencingThis();
     for (const r of childrenRef) {
-        if (await r.isCardItem()) {
+        if (await r.isCardItem() || await r.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) { // 
             const question = await r.getParentRem();
             if (question) {
                 const questionId = question._id;
@@ -202,24 +257,24 @@ async function getCardsOfReferences(plugin: RNPlugin, rem: Rem, processed = new 
     const children = [...childrenRem, ...childrenRef];
 
     for (const child of children) {
-        const childCards = await getCardsOfReferences(plugin, child, processed);
-        cards = cards.concat(childCards);
+      const childCards = await getCardsOfRem(plugin, child, processed);
+      cards = cards.concat(childCards);
     }
 
     return cards;
 }
 
-async function getCardsOfReferencesDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
-  const allCards = await getCardsOfReferences(plugin, rem);
+async function getCardsOfRemDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
+  const allCards = await getCardsOfRem(plugin, rem);
 
-  console.log("allCards: " + allCards.length);
+  //console.log("allCards: " + allCards.length);
 
   const dueCards = allCards.filter(card => {
     return card.nextRepetitionTime === undefined || 
            (typeof card.nextRepetitionTime === 'number' && card.nextRepetitionTime <= Date.now());
   });
 
-  console.log("dueCards: " + dueCards.length);
+  //console.log("dueCards: " + dueCards.length);
   return dueCards;
 }
 
@@ -227,7 +282,7 @@ async function loadCards(plugin: RNPlugin, rem: Rem | undefined, cardIds: string
     if(!rem)
         return [];
 
-    const allCards = await getCardsOfReferences(plugin, rem);
+    const allCards = await getCardsOfRem(plugin, rem);
     const cardIdSet = new Set(cardIds);
     const filteredCards = allCards.filter(card => cardIdSet.has(card._id));
     return filteredCards;
@@ -347,7 +402,7 @@ function CustomQueueWidget() {
         if (currentFocusedRem) {
             const updateQueue = async () => {
             setLoading(true);
-            const fetchedCards = await getCardsOfReferences(plugin, currentFocusedRem);
+            const fetchedCards = await getCardsOfRem(plugin, currentFocusedRem);
             const ids = fetchedCards.map((c) => c._id);
             setCardIds(ids);
             setCards(fetchedCards);
@@ -371,7 +426,7 @@ function CustomQueueWidget() {
       if (currentFocusedRem) {
           const updateQueue = async () => {
           setLoading(true);
-          const fetchedCards = await getCardsOfReferencesDue(plugin, currentFocusedRem);
+          const fetchedCards = await getCardsOfRemDue(plugin, currentFocusedRem);
           const ids = fetchedCards.map((c) => c._id);
           setCardIds(ids);
           setCards(fetchedCards);
