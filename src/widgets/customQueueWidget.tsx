@@ -336,7 +336,29 @@ export function getLastInterval(history: RepetitionStatus[] | undefined): {worki
   return undefined;
 }
 
-function CustomQueueWidget() {
+async function questionsFromCards_(plugin: RNPlugin, cards: Card[]): Promise<string[]> {
+  let questions: string[] = [];
+
+  for(const c of cards) {
+    questions.push(await getRemText(plugin, await c.getRem()));
+  }
+
+  return questions;
+}
+
+// Updated to return an array of { id, text } objects
+async function questionsFromCards(plugin: RNPlugin, cards: Card[]): Promise<{ id: string, text: string }[]> {
+    const questions: { id: string, text: string }[] = [];
+    for (const c of cards) {
+        const rem = await c.getRem();
+        const text = rem ? await getRemText(plugin, rem) : '';
+        questions.push({ id: rem ? rem._id : c._id, text });
+    }
+    return questions;
+}
+
+/*
+function CustomQueueWidget_() {
     const plugin = usePlugin();
     const [focusedRem, setFocusedRem] = useState<Rem | undefined>(undefined);
     const [loading, setLoading] = useState<boolean>(false);
@@ -349,6 +371,9 @@ function CustomQueueWidget() {
     const [currentCardLastRating, setcurrentCardLastRating] = useState<string>("");
     const [isTableExpanded, setIsTableExpanded] = useState<boolean>(false);
     const [focusedRemText, setFocusedRemText] = useState<string>("");
+
+    const [isListExpanded, setIsListExpanded] = useState<boolean>(false);
+    const [cardsStr, setCardsStr] = useState<string[]>([]);
   
     // Load persisted state on mount
     useEffect(() => {
@@ -362,6 +387,10 @@ function CustomQueueWidget() {
             setCardIds(currentQueueCardIds);
             const loadedCards = await loadCards(plugin, rem, currentQueueCardIds);
             setCards(loadedCards);
+            //
+            setCardsStr(await questionsFromCards(plugin, loadedCards));
+            
+            // Card Info Panel
             updateCardInfo();
           }
         }
@@ -406,6 +435,8 @@ function CustomQueueWidget() {
             const ids = fetchedCards.map((c) => c._id);
             setCardIds(ids);
             setCards(fetchedCards);
+            //
+            setCardsStr(await questionsFromCards(plugin, fetchedCards));
             await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
             await plugin.storage.setSynced("currentQueueCardIds", ids);
 
@@ -430,6 +461,8 @@ function CustomQueueWidget() {
           const ids = fetchedCards.map((c) => c._id);
           setCardIds(ids);
           setCards(fetchedCards);
+          //
+          setCardsStr(await questionsFromCards(plugin, fetchedCards));
           await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
           await plugin.storage.setSynced("currentQueueCardIds", ids);
 
@@ -469,19 +502,24 @@ function CustomQueueWidget() {
         if (focusedRem) {
           await plugin.window.openRem(focusedRem);
         }
-      };
+    };
   
-    const openFlashCardRem = async () => {
+    const openCurrentFlashcard = async () => {
         const currentCard = cards.find((card) => card._id === currentCardId);
         const rem = await currentCard?.getRem();
         if (rem) {
           await plugin.window.openRem(rem);
         }
-      };
+    };
   
     const toggleTableExpansion = () => {
       setIsTableExpanded(!isTableExpanded);
       updateCardInfo();
+    };
+
+    const toogleCardList = () => {
+      setIsListExpanded(!isListExpanded);
+      //updateCardInfo();
     };
   
     return (
@@ -498,10 +536,22 @@ function CustomQueueWidget() {
         ) : cardIds.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", flex: "1", overflow: "auto" }}>
             <div style={{ marginTop: "10px" }}>
+              <button onClick={toogleCardList} style={{ marginBottom: 10 }}>
+                {isListExpanded ? "- Card List:" : "+ Card List: "}
+              </button>
+              {isListExpanded && (
+                <div>
+                  {cardsStr.map((c) => (
+                    <div><MyRemNoteButton text={c} onClick={async () => {}}/></div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ marginTop: "10px" }}>
               <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
                 {isTableExpanded ? "- Card Information: " : "+ Card Information: "}{currentCardText}
               </button>
-              <MyRemNoteButton text="" onClick={openFlashCardRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
+              <MyRemNoteButton text="" onClick={openCurrentFlashcard} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
               {isTableExpanded && (
                 <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 10 }}>
                   <thead>
@@ -535,6 +585,222 @@ function CustomQueueWidget() {
           <div>No cards to display. CardIds is empty: {JSON.stringify(cardIds)}</div>
         )}
       </div>
+    );
+}
+*/
+
+function CustomQueueWidget() {
+    const plugin = usePlugin();
+    const [focusedRem, setFocusedRem] = useState<Rem | undefined>(undefined);
+    const [loading, setLoading] = useState<boolean>(false);
+    const [cardIds, setCardIds] = useState<string[]>([]);
+    const [cards, setCards] = useState<Card[]>([]);
+    const [currentCardId, setCurrentCardId] = useState<string | undefined>(undefined);
+    const [currentCardText, setCurrentCardText] = useState<string>("");
+    const [currentCardLastInterval, setCurrentCardLastInterval] = useState<string>("");
+    const [currentCardRepetitionTiming, setcurrentCardRepetitionTiming] = useState<number>(0);
+    const [currentCardLastRating, setcurrentCardLastRating] = useState<string>("");
+    const [isTableExpanded, setIsTableExpanded] = useState<boolean>(false);
+    const [focusedRemText, setFocusedRemText] = useState<string>("");
+    const [isListExpanded, setIsListExpanded] = useState<boolean>(false);
+    // Updated state type to array of objects
+    const [cardsStr, setCardsStr] = useState<{ id: string, text: string }[]>([]);
+
+    useEffect(() => {
+        const initFromStorage = async () => {
+            const currentQueueRemId: string | undefined = await plugin.storage.getSynced("currentQueueRemId");
+            const currentQueueCardIds: string[] = (await plugin.storage.getSynced("currentQueueCardIds")) || [];
+            if (currentQueueRemId && currentQueueCardIds.length > 0) {
+                const rem = await plugin.rem.findOne(currentQueueRemId);
+                if (rem) {
+                    setFocusedRem(rem);
+                    setCardIds(currentQueueCardIds);
+                    const loadedCards = await loadCards(plugin, rem, currentQueueCardIds);
+                    setCards(loadedCards);
+                    setCardsStr(await questionsFromCards(plugin, loadedCards));
+                    updateCardInfo();
+                }
+            }
+        };
+        initFromStorage();
+    }, [plugin]);
+
+    useEffect(() => {
+        const handleQueueLoadCard = async (event: any) => {
+            updateCardInfo(event.cardId);
+        };
+        plugin.event.addListener(AppEvents.QueueLoadCard, undefined, handleQueueLoadCard);
+        return () => {
+            plugin.event.removeListener(AppEvents.QueueLoadCard, undefined, handleQueueLoadCard);
+        };
+    }, [plugin]);
+
+    useEffect(() => {
+        const updateRemText = async () => {
+            if (focusedRem) {
+                const text = await getRemText(plugin, focusedRem);
+                setFocusedRemText(text);
+            } else {
+                setFocusedRemText("");
+            }
+        };
+        updateRemText();
+    }, [focusedRem]);
+
+    const loadCurrentRemQueue = async () => {
+        setLoading(true);
+        const currentFocusedRem = await plugin.focus.getFocusedRem();
+        if (currentFocusedRem) {
+            const updateQueue = async () => {
+                setLoading(true);
+                const fetchedCards = await getCardsOfRem(plugin, currentFocusedRem);
+                const ids = fetchedCards.map((c) => c._id);
+                setCardIds(ids);
+                setCards(fetchedCards);
+                setCardsStr(await questionsFromCards(plugin, fetchedCards));
+                await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
+                await plugin.storage.setSynced("currentQueueCardIds", ids);
+                setLoading(false);
+                setFocusedRem(currentFocusedRem);
+                setIsTableExpanded(false);
+            };
+            updateQueue();
+        }
+    };
+
+    const loadCurrentRemQueueDue = async () => {
+        setLoading(true);
+        const currentFocusedRem = await plugin.focus.getFocusedRem();
+        if (currentFocusedRem) {
+            const updateQueue = async () => {
+                setLoading(true);
+                const fetchedCards = await getCardsOfRemDue(plugin, currentFocusedRem);
+                const ids = fetchedCards.map((c) => c._id);
+                setCardIds(ids);
+                setCards(fetchedCards);
+                setCardsStr(await questionsFromCards(plugin, fetchedCards));
+                await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
+                await plugin.storage.setSynced("currentQueueCardIds", ids);
+                setLoading(false);
+                setFocusedRem(currentFocusedRem);
+                setIsTableExpanded(false);
+            };
+            updateQueue();
+        }
+    };
+
+    const updateCardInfo = async (cardId = undefined) => {
+        const id = cardId ?? await plugin.storage.getSynced<string>("currentQueueCardId");
+        if (id) {
+            setCurrentCardId(id);
+            const currentCard = await plugin.card.findOne(id);
+            const rem = await currentCard?.getRem();
+            const lastInterval = getLastInterval(currentCard?.repetitionHistory);
+            setCurrentCardLastInterval(lastInterval ? formatMilliseconds(lastInterval.workingInterval) : "");
+            setcurrentCardRepetitionTiming(lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() : 0);
+            setcurrentCardLastRating(getLastRatingStr(currentCard?.repetitionHistory));
+        }
+    };
+
+    async function onMouseClick() {
+        updateCardInfo();
+    }
+
+    const openQueueRem = async () => {
+        if (focusedRem) {
+            await plugin.window.openRem(focusedRem);
+        }
+    };
+
+    const openCurrentFlashcard = async () => {
+        const currentCard = cards.find((card) => card._id === currentCardId);
+        const rem = await currentCard?.getRem();
+        if (rem) {
+            await plugin.window.openRem(rem);
+        }
+    };
+
+    const openRem = async (plugin: RNPlugin, id: string) => {
+      const rem = await plugin.rem.findOne(id);
+
+      if(rem)
+        await plugin.window.openRem(rem);
+    };
+
+    const toggleTableExpansion = () => {
+        setIsTableExpanded(!isTableExpanded);
+        updateCardInfo();
+    };
+
+    const toogleCardList = () => {
+        setIsListExpanded(!isListExpanded);
+    };
+
+    return (
+        <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ paddingRight: "20px" }}>Current Queue: {focusedRemText || "No Rem selected"} <MyRemNoteButton text="" onClick={openQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" /></div>
+                <div style={{ paddingRight: "20px" }}>Practice Flashcards from Rem:
+                    <MyRemNoteButton text="All" onClick={loadCurrentRemQueue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
+                    <MyRemNoteButton text="Due" onClick={loadCurrentRemQueueDue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
+                </div>
+            </div>
+            {loading ? (
+                <div>Loading flashcards...</div>
+            ) : cardIds.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", flex: "1", overflow: "auto" }}>
+                    <div style={{ marginTop: "10px"}}>
+                        <button onClick={toogleCardList} style={{ marginBottom: 10 }}>
+                            {isListExpanded ? "- Card List:" : "+ Card List: "}
+                        </button>
+                        {isListExpanded && (
+                            <div style={{ height: '200px', overflowY: 'scroll', padding: '10px', border: '1px solid #ddd' , marginRight: '20px'}}>
+                                {cardsStr.map((c) => (
+                                    <div key={c.id}>
+                                        <MyRemNoteButton text={c.text} onClick={async () => {openRem(plugin, c.id)}} />
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <div style={{ marginTop: "10px", marginRight: '20px' }}>
+                        <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
+                            {isTableExpanded ? "- Card Information: " : "+ Card Information: "}{currentCardText}
+                        </button>
+                        <MyRemNoteButton text="" onClick={openCurrentFlashcard} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
+                        {isTableExpanded && (
+                            <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 10 }}>
+                                <thead>
+                                    <tr>
+                                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Date</th>
+                                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Interval</th>
+                                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Rating</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                                            {currentCardRepetitionTiming == 0
+                                                ? ""
+                                                : currentCardRepetitionTiming < 0
+                                                ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")"
+                                                : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}
+                                        </td>
+                                        <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastInterval}</td>
+                                        <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastRating}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                    <div onClick={onMouseClick} style={{ cursor: "pointer" , marginRight: '20px'}}>
+                        <Queue cardIds={cardIds} width={"100%"} maxWidth={"100%"} />
+                    </div>
+                </div>
+            ) : (
+                <div>No cards to display. CardIds is empty: {JSON.stringify(cardIds)}</div>
+            )}
+        </div>
     );
 }
 
