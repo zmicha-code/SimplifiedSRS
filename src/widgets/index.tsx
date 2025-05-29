@@ -269,6 +269,7 @@ async function onActivate(plugin: ReactRNPlugin) {
     dimensions: { height: 'auto', width: '100%' },
     widgetTabIcon: "https://i.imgur.com/nGwgOpN.png"
   });
+  //await plugin.window.openWidgetInPane('customQueueWidget');
 
   // definitions
 

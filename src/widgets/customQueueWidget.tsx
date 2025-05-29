@@ -1,4 +1,4 @@
-import { usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn, AppEvents, BuiltInPowerupCodes
+import { usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn, AppEvents, BuiltInPowerupCodes, useTracker
 } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 //import { getLastInterval, getWrongInRow, formatMilliseconds } from ''
@@ -169,8 +169,13 @@ export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<R
 
 // -> index.tsx
 function formatMilliseconds(ms : number): string {
+  let isNegative = false;
+
   if (ms === 0) return 'New Card'; // Special case for zero // "0 seconds"
-  if (ms < 0) ms = Math.abs(ms);    // Handle negatives with absolute value
+  if (ms < 0) {
+    isNegative = true;
+    ms = Math.abs(ms);    // Handle negatives with absolute value
+  }
 
   const millisecondsInSecond = 1000;
   const millisecondsInMinute = millisecondsInSecond * 60;
@@ -202,7 +207,7 @@ function formatMilliseconds(ms : number): string {
   // Pluralize unit if value isn’t 1
   const plural = value !== 1 ? 's' : '';
   //return `${value} ${unit}${plural}`;
-  return value + " " + unit + plural;
+  return (isNegative ? "-" : "") + value + " " + unit + plural;
 }
 
 async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) {
@@ -217,8 +222,9 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) 
 
     cards = cards.concat(remCards);
     
-    // A Reference appears in the Answer of a Flashcard
     const childrenRem = await getCleanChildrenAll(plugin, rem);
+
+    // A Reference to another Flashcard appears in the Answer of a Flashcard
     for(const c of childrenRem) {
       const refs = await c.remsBeingReferenced();
 
@@ -238,8 +244,9 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) 
       }
     }
 
-    // Check for Questions where the Ref appears as an Answer. Then add that question
     const childrenRef = await rem.remsReferencingThis();
+
+    // Check for Questions where the current Question appears as an Answer.
     for (const r of childrenRef) {
         if (await r.isCardItem() || await r.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) { // 
             const question = await r.getParentRem();
@@ -267,15 +274,93 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) 
 async function getCardsOfRemDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
   const allCards = await getCardsOfRem(plugin, rem);
 
-  //console.log("allCards: " + allCards.length);
+  // There are cards where this doesnt work.
+  //const dueCards = allCards.filter(card => {
+  //  return card.nextRepetitionTime === undefined || 
+  //         (typeof card.nextRepetitionTime === 'number' && card.nextRepetitionTime <= Date.now());
+  //});
 
   const dueCards = allCards.filter(card => {
-    return card.nextRepetitionTime === undefined || 
-           (typeof card.nextRepetitionTime === 'number' && card.nextRepetitionTime <= Date.now());
+    const lastInterval = getLastInterval(card?.repetitionHistory);
+    return lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() < 0 : true;
   });
 
   //console.log("dueCards: " + dueCards.length);
   return dueCards;
+}
+
+async function getCardsOfRemDisabled(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()): Promise<{ id: string, text: string, nextDate: number }[]> {
+  if (processed.has(rem._id)) {
+        return [];
+    }
+  processed.add(rem._id);
+
+  let cards: { id: string, text: string, nextDate: number }[] = [];
+
+  //
+  const childrenRem = await getCleanChildrenAll(plugin, rem);
+
+  // Check Children for Disabled Flashcards
+  for(const c of childrenRem) {
+    //console.log(name + ": Direction" + await c.getEnablePractice())
+    if(!(await c.getEnablePractice())) {
+      //console.log("Adding " + name + "(" + c._id + ")");
+      if (!addedCardIds.has(c._id)) {
+        addedCardIds.add(c._id);
+
+        const name = await getRemText(plugin, c);
+        cards.push({ id: c._id, text: name, nextDate: 0 });
+      }
+    } else {
+      //console.log(name + " has no PowerUp.DisableCards");
+    }
+  }
+
+  // A Reference to another Question appears in the Answer of a Flashcard
+  for(const c of childrenRem) {
+    const refs = await c.remsBeingReferenced();
+
+    if (refs.length > 0 && (await c.isCardItem() || await c.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))) { // 
+      const ref = refs[0];
+
+      // If the Ref is a Disabled Flashcard, add it.
+      if(!(await ref.getEnablePractice())) {
+
+        if (!addedCardIds.has(ref._id)) {
+          addedCardIds.add(ref._id);
+          const name = await getRemText(plugin, ref);
+          cards.push({id: ref._id, text: name, nextDate: 0});
+        }
+      }
+
+      // TODO: What to do if the Ref is a Concept?
+    }
+  }
+
+  //
+  const childrenRef = await rem.remsReferencingThis();
+
+  // Check for Questions where the current Question appears as an Answer.
+  for (const r of childrenRef) {
+    if (await r.isCardItem() || await r.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) { // 
+        const question = await r.getParentRem();
+        if (question && !(await question.getEnablePractice())) {
+          if (!addedCardIds.has(question._id)) {
+            addedCardIds.add(question._id);
+            cards.push({id: question._id, text: await getRemText(plugin, question), nextDate: 0});
+          } 
+        }
+    }
+  }
+
+  // Recursion
+  const children = [...childrenRem, ...childrenRef];
+  for (const c of children) {
+    const childCards = await getCardsOfRemDisabled(plugin, c, processed, addedCardIds);
+    cards = cards.concat(childCards);
+  }
+
+  return cards;
 }
 
 async function loadCards(plugin: RNPlugin, rem: Rem | undefined, cardIds: string[]): Promise<Card[]> {
@@ -347,12 +432,14 @@ async function questionsFromCards_(plugin: RNPlugin, cards: Card[]): Promise<str
 }
 
 // Updated to return an array of { id, text } objects
-async function questionsFromCards(plugin: RNPlugin, cards: Card[]): Promise<{ id: string, text: string }[]> {
-    const questions: { id: string, text: string }[] = [];
+async function questionsFromCards(plugin: RNPlugin, cards: Card[]): Promise<{ id: string, text: string, nextDate: number }[]> {
+    const questions: { id: string, text: string, nextDate: number }[] = [];
     for (const c of cards) {
         const rem = await c.getRem();
         const text = rem ? await getRemText(plugin, rem) : '';
-        questions.push({ id: rem ? rem._id : c._id, text });
+
+        const lastInterval = getLastInterval(c.repetitionHistory);
+        questions.push({ id: rem ? rem._id : c._id, text, nextDate: lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval : 0});
     }
     return questions;
 }
@@ -601,10 +688,17 @@ function CustomQueueWidget() {
     const [currentCardRepetitionTiming, setcurrentCardRepetitionTiming] = useState<number>(0);
     const [currentCardLastRating, setcurrentCardLastRating] = useState<string>("");
     const [isTableExpanded, setIsTableExpanded] = useState<boolean>(false);
-    const [focusedRemText, setFocusedRemText] = useState<string>("");
+    const [queueRemText, setQueueRemText] = useState<string>("");
+    const [selectedRemText, setSelectedRemText] = useState<string>("");
     const [isListExpanded, setIsListExpanded] = useState<boolean>(false);
     // Updated state type to array of objects
-    const [cardsStr, setCardsStr] = useState<{ id: string, text: string }[]>([]);
+    const [cardsData, setCardsData] = useState<{ id: string, text: string , nextDate: number}[]>([]);
+    const [sortAscending, setSortAscending] = useState<boolean>(true);
+
+    const currentRem = useTracker(async (reactPlugin) => {
+            return await reactPlugin.focus.getFocusedRem();
+        }
+    );
 
     useEffect(() => {
         const initFromStorage = async () => {
@@ -617,7 +711,7 @@ function CustomQueueWidget() {
                     setCardIds(currentQueueCardIds);
                     const loadedCards = await loadCards(plugin, rem, currentQueueCardIds);
                     setCards(loadedCards);
-                    setCardsStr(await questionsFromCards(plugin, loadedCards));
+                    setCardsData(await questionsFromCards(plugin, loadedCards));
                     updateCardInfo();
                 }
             }
@@ -637,27 +731,74 @@ function CustomQueueWidget() {
 
     useEffect(() => {
         const updateRemText = async () => {
-            if (focusedRem) {
-                const text = await getRemText(plugin, focusedRem);
-                setFocusedRemText(text);
-            } else {
-                setFocusedRemText("");
-            }
+          //setFocusedRem(currentRem);
+
+          if (focusedRem) {
+              const text = await getRemText(plugin, focusedRem);
+              setQueueRemText(text);
+          } else {
+            setQueueRemText("");
+          }
         };
         updateRemText();
-    }, [focusedRem]);
+    }, [focusedRem]); // focusedRem
+
+    useEffect(() => {
+      const updateSelectedRemText = async () => {
+        const txt = await getRemText(plugin, currentRem);
+        setSelectedRemText(txt == "" ? "No Rem Selected" : txt);
+      };
+      updateSelectedRemText();
+    }, [currentRem]); // focusedRem
 
     const loadCurrentRemQueue = async () => {
-        setLoading(true);
-        const currentFocusedRem = await plugin.focus.getFocusedRem();
+      //console.log(await getRemText(plugin, focusedRem));
+
+      setCardIds([]);
+      setCards([]);
+      setCardsData([]);
+      setFocusedRem(undefined);
+      setIsTableExpanded(false);
+      //setLoading(true);
+      const currentFocusedRem = currentRem; // focusedRem; //await plugin.focus.getFocusedRem();
+      if (currentFocusedRem) {
+          const updateQueue = async () => {
+              setLoading(true);
+              const text = await getRemText(plugin, currentFocusedRem);
+              setQueueRemText(text);
+              const fetchedCards = await getCardsOfRem(plugin, currentFocusedRem);
+              const ids = fetchedCards.map((c) => c._id);
+              setCardIds(ids);
+              setCards(fetchedCards);
+              setCardsData(await questionsFromCards(plugin, fetchedCards));
+              await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
+              await plugin.storage.setSynced("currentQueueCardIds", ids);
+              setLoading(false);
+              setFocusedRem(currentFocusedRem);
+              setIsTableExpanded(false);
+          };
+          updateQueue();
+      }
+    };
+
+    const loadCurrentRemQueueDue = async () => {
+        setCardIds([]);
+        setCards([]);
+        setCardsData([]);
+        setFocusedRem(undefined);
+        setIsTableExpanded(false);
+        //setLoading(true);
+        const currentFocusedRem = currentRem; //focusedRem; //await plugin.focus.getFocusedRem();
         if (currentFocusedRem) {
             const updateQueue = async () => {
                 setLoading(true);
-                const fetchedCards = await getCardsOfRem(plugin, currentFocusedRem);
+                const text = await getRemText(plugin, currentFocusedRem);
+                setQueueRemText(text);
+                const fetchedCards = await getCardsOfRemDue(plugin, currentFocusedRem);
                 const ids = fetchedCards.map((c) => c._id);
                 setCardIds(ids);
                 setCards(fetchedCards);
-                setCardsStr(await questionsFromCards(plugin, fetchedCards));
+                setCardsData(await questionsFromCards(plugin, fetchedCards));
                 await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
                 await plugin.storage.setSynced("currentQueueCardIds", ids);
                 setLoading(false);
@@ -668,25 +809,28 @@ function CustomQueueWidget() {
         }
     };
 
-    const loadCurrentRemQueueDue = async () => {
-        setLoading(true);
-        const currentFocusedRem = await plugin.focus.getFocusedRem();
-        if (currentFocusedRem) {
-            const updateQueue = async () => {
-                setLoading(true);
-                const fetchedCards = await getCardsOfRemDue(plugin, currentFocusedRem);
-                const ids = fetchedCards.map((c) => c._id);
-                setCardIds(ids);
-                setCards(fetchedCards);
-                setCardsStr(await questionsFromCards(plugin, fetchedCards));
-                await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
-                await plugin.storage.setSynced("currentQueueCardIds", ids);
-                setLoading(false);
-                setFocusedRem(currentFocusedRem);
-                setIsTableExpanded(false);
-            };
-            updateQueue();
-        }
+    const loadCurrentRemQueueDisabled = async () => {
+      setCardIds([]);
+      setCards([]);
+      setCardsData([]);
+      setFocusedRem(undefined);
+      setIsTableExpanded(false);
+
+      const currentFocusedRem = currentRem;
+
+      if(currentFocusedRem) {
+        const updateCardsList = async () => {
+          setLoading(true);
+          const text = await getRemText(plugin, currentFocusedRem);
+          setQueueRemText(text);
+          setCardsData(await getCardsOfRemDisabled(plugin, currentFocusedRem));
+          setLoading(false);
+          setFocusedRem(currentFocusedRem);
+          setIsTableExpanded(false);
+        };
+
+        updateCardsList();
+      }
     };
 
     const updateCardInfo = async (cardId = undefined) => {
@@ -737,71 +881,224 @@ function CustomQueueWidget() {
     };
 
     return (
-        <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div style={{ paddingRight: "20px" }}>Current Queue: {focusedRemText || "No Rem selected"} <MyRemNoteButton text="" onClick={openQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" /></div>
-                <div style={{ paddingRight: "20px" }}>Practice Flashcards from Rem:
-                    <MyRemNoteButton text="All" onClick={loadCurrentRemQueue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
-                    <MyRemNoteButton text="Due" onClick={loadCurrentRemQueueDue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
-                </div>
+  <div
+    style={{
+      height: "100%",
+      width: "100%",
+      display: "flex",
+      flexDirection: "column",
+      padding: 10,
+      overflowY: "auto", // Add this to make the outer div scrollable
+    }}
+  >
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 8,
+      }}
+    >
+      <div style={{
+        width: "100%",
+            maxHeight: "600px",
+            overflowY: "scroll",
+            padding: "10px",
+            border: "1px solid #ddd",
+            marginRight: "20px",
+          }}>
+        <div> Practice Flashcards from {selectedRemText}</div>
+        <MyRemNoteButton
+          text="All"
+          onClick={loadCurrentRemQueue}
+          img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
+        />
+        <MyRemNoteButton
+          text="Due"
+          onClick={loadCurrentRemQueueDue}
+          img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
+        />
+        <MyRemNoteButton
+          text="Disabled"
+          onClick={loadCurrentRemQueueDisabled}
+          img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
+        />
+      </div>
+    </div>
+    {loading ? (
+      <div>Loading flashcards...</div>
+    ) : cardsData.length > 0 ? (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          // Removed flex: "1" and overflowY: "scroll" so it takes natural height
+        }}
+      >
+        <div style={{ marginTop: "10px", marginRight: "20px" }}>
+          <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 8,
+      }}>
+            <MyRemNoteButton
+              text={queueRemText ? "Current Queue: " + queueRemText : "No Rem selected"}
+              onClick={openQueueRem}
+              img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z"
+            />
+            <button onClick={toogleCardList} style={{ marginBottom: 10 }}>
+              {(isListExpanded ? "Collapse Cards" : "Expand Cards") +
+                "(" +
+                cardsData.length +
+                "): "}
+            </button>
+          </div>
+          {isListExpanded && (
+            <div style={{ maxHeight: "500px", overflowY: "auto" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                marginBottom: 10,
+              }}
+            >
+              <thead>
+                <tr>
+                  <th
+                    style={{
+                      border: "1px solid #ddd",
+                      padding: 8,
+                      textAlign: "left",
+                    }}
+                  >
+                    Question
+                  </th>
+                  <th
+                    style={{
+                      border: "1px solid #ddd",
+                      padding: 8,
+                      textAlign: "left",
+                    }}
+                  >
+                    <MyRemNoteButton text={"Next Date"} onClick={() => {setSortAscending(!sortAscending); setIsListExpanded(false);}}/>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...cardsData].sort((a, b) => (sortAscending ? a.nextDate - b.nextDate : b.nextDate - a.nextDate)).map((c) => (
+                  <tr key={c.id}>
+                    <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                      <MyRemNoteButton
+                        text={c.text}
+                        onClick={async () => {
+                          openRem(plugin, c.id);
+                        }}
+                      />
+                    </td>
+                    <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                      {formatMilliseconds(c.nextDate - Date.now())}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
             </div>
-            {loading ? (
-                <div>Loading flashcards...</div>
-            ) : cardIds.length > 0 ? (
-                <div style={{ display: "flex", flexDirection: "column", flex: "1", overflow: "auto" }}>
-                    <div style={{ marginTop: "10px"}}>
-                        <button onClick={toogleCardList} style={{ marginBottom: 10 }}>
-                            {isListExpanded ? "- Card List:" : "+ Card List: "}
-                        </button>
-                        {isListExpanded && (
-                            <div style={{ height: '200px', overflowY: 'scroll', padding: '10px', border: '1px solid #ddd' , marginRight: '20px'}}>
-                                {cardsStr.map((c) => (
-                                    <div key={c.id}>
-                                        <MyRemNoteButton text={c.text} onClick={async () => {openRem(plugin, c.id)}} />
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                    <div style={{ marginTop: "10px", marginRight: '20px' }}>
-                        <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
-                            {isTableExpanded ? "- Card Information: " : "+ Card Information: "}{currentCardText}
-                        </button>
-                        <MyRemNoteButton text="" onClick={openCurrentFlashcard} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
-                        {isTableExpanded && (
-                            <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 10 }}>
-                                <thead>
-                                    <tr>
-                                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Date</th>
-                                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Interval</th>
-                                        <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Rating</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                                            {currentCardRepetitionTiming == 0
-                                                ? ""
-                                                : currentCardRepetitionTiming < 0
-                                                ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")"
-                                                : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}
-                                        </td>
-                                        <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastInterval}</td>
-                                        <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastRating}</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        )}
-                    </div>
-                    <div onClick={onMouseClick} style={{ cursor: "pointer" , marginRight: '20px'}}>
-                        <Queue cardIds={cardIds} width={"100%"} maxWidth={"100%"} />
-                    </div>
-                </div>
-            ) : (
-                <div>No cards to display. CardIds is empty: {JSON.stringify(cardIds)}</div>
-            )}
+          )}
         </div>
-    );
+        <div style={{ marginTop: "10px", marginRight: "20px" }}>
+          <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
+            {isTableExpanded ? "- Card Information: " : "+ Card Information: "}
+            {currentCardText}
+          </button>
+          <MyRemNoteButton
+            text=""
+            onClick={openCurrentFlashcard}
+            img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z"
+          />
+          {isTableExpanded && (
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                marginBottom: 10,
+              }}
+            >
+              <thead>
+                <tr>
+                  <th
+                    style={{
+                      border: "1px solid #ddd",
+                      padding: 8,
+                      textAlign: "left",
+                    }}
+                  >
+                    Date
+                  </th>
+                  <th
+                    style={{
+                      border: "1px solid #ddd",
+                      padding: 8,
+                      textAlign: "left",
+                    }}
+                  >
+                    Last Interval
+                  </th>
+                  <th
+                    style={{
+                      border: "1px solid #ddd",
+                      padding: 8,
+                      textAlign: "left",
+                    }}
+                  >
+                    Last Rating
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                    {currentCardRepetitionTiming == 0
+                      ? ""
+                      : currentCardRepetitionTiming < 0
+                      ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")"
+                      : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}
+                  </td>
+                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                    {currentCardLastInterval}
+                  </td>
+                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                    {currentCardLastRating}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div
+          onClick={onMouseClick}
+          style={{
+            height: "600px",
+            overflowY: "scroll",
+            padding: "10px",
+            border: "1px solid #ddd",
+            marginRight: "20px",
+          }}
+        >
+          <Queue
+            cardIds={cardIds}
+            width={"100%"}
+            maxWidth={"100%"}
+            height={"100%"}
+            maxHeight={"100%"}
+          />
+        </div>
+      </div>
+    ) : (
+      <div>No cards to display. CardIds is empty: {JSON.stringify(cardIds)}</div>
+    )}
+  </div>
+);
 }
 
 renderWidget(CustomQueueWidget);
