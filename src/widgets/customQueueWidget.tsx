@@ -210,7 +210,7 @@ function formatMilliseconds(ms : number): string {
   return (isNegative ? "-" : "") + value + " " + unit + plural;
 }
 
-async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) {
+async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()) {
     if (processed.has(rem._id)) {
         return [];
     }
@@ -220,7 +220,13 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) 
 
     const remCards = await rem.getCards();
 
-    cards = cards.concat(remCards);
+    //cards = cards.concat(remCards);
+    for(const c of remCards) {
+      if (!addedCardIds.has(c._id)) {
+        addedCardIds.add(c._id);
+        cards.push(c);
+      }
+    }
     
     const childrenRem = await getCleanChildrenAll(plugin, rem);
 
@@ -233,11 +239,19 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) 
 
         // If the Ref is a Flashcard, add it.
         if((await ref.getCards()).length > 0) {
-          const isQuestionInCards = cards.some(card => card.remId === ref._id);
-            if (!isQuestionInCards) {
-                const questionCards = await ref.getCards();
-                cards = cards.concat(questionCards);
+          //const isQuestionInCards = cards.some(card => card.remId === ref._id);
+          //if (!isQuestionInCards) {
+          //    const questionCards = await ref.getCards();
+          //    cards = cards.concat(questionCards);
+          //}
+          const questionCards = await ref.getCards();
+
+          for(const c of questionCards) {
+            if (!addedCardIds.has(c._id)) {
+              addedCardIds.add(c._id);
+              cards.push(c);
             }
+          }
         }
 
         // TODO: What to do if the Ref is a Concept?
@@ -252,10 +266,18 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) 
             const question = await r.getParentRem();
             if (question) {
                 const questionId = question._id;
-                const isQuestionInCards = cards.some(card => card.remId === questionId);
-                if (!isQuestionInCards) {
-                    const questionCards = await question.getCards();
-                    cards = cards.concat(questionCards);
+                //const isQuestionInCards = cards.some(card => card.remId === questionId);
+                //if (!isQuestionInCards) {
+                //    const questionCards = await question.getCards();
+                //    cards = cards.concat(questionCards);
+                //}
+                const questionCards = await question.getCards();
+
+                for(const c of questionCards) {
+                  if (!addedCardIds.has(c._id)) {
+                    addedCardIds.add(c._id);
+                    cards.push(c);
+                  }
                 }
             }
         }
@@ -264,7 +286,7 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set()) 
     const children = [...childrenRem, ...childrenRef];
 
     for (const child of children) {
-      const childCards = await getCardsOfRem(plugin, child, processed);
+      const childCards = await getCardsOfRem(plugin, child, processed, addedCardIds);
       cards = cards.concat(childCards);
     }
 
