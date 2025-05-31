@@ -167,6 +167,205 @@ export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<R
   return cleanRems;
 }
 
+// -> AbstractionAndInheritance
+export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<Rem[][]> {
+  const lineages = await findPaths(plugin, rem, [rem]);
+  return lineages;
+}
+
+async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]): Promise<Rem[][]> {
+  const parents = (await getParentClassType(plugin, currentRem)) || [];
+
+  if (parents.length === 1 && parents[0]._id === currentRem._id) {
+    return [currentPath];
+  } else {
+    const allPaths: Rem[][] = [];
+    for (const parent of parents) {
+      if (!currentPath.some(r => r._id === parent._id)) {
+        const parentPaths = await findPaths(plugin, parent, [...currentPath, parent]);
+        allPaths.push(...parentPaths);
+      }
+    }
+    return allPaths;
+  }
+}
+
+// Function to get the closest class parent for a Rem
+export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Rem[] | null> {
+  if (!rem) return null;
+
+  const parent = await rem.getParentRem();
+  const type = await rem.getType();
+  const isReferencing = await isReferencingRem(plugin, rem);
+  const isDocument = await rem.isDocument();
+  const isSlot = await rem.isSlot();
+  const tags = await getCleanTags(plugin, rem);
+
+  // DOCUMENT with TAGS. This should never happen. A DOCUMENT should always define a new type and therefore have no parents through tags.
+  if (isDocument && tags.length > 0) {
+    await plugin.app.toast('Mistake: DOCUMENT with TAG. (' + await getRemText(plugin, rem) + ")");
+    //return tags[0];
+    return null;
+  } 
+
+  // DOCUMENT without TAGS. Defines a new Type. Has no other parent Type
+  if (isDocument)
+    return [rem];
+
+  // SLOT with TAG.
+  // NEW: We dont use TAGS for inheritance any more
+  if(isSlot && tags.length > 0) {
+    await plugin.app.toast('Mistake: SLOT with TAG. (' + await getRemText(plugin, rem) + ")");
+    //return [tags[0]];
+    return null
+  }
+
+  if(isSlot && isReferencing) {
+    const referencedRem = (await rem.remsBeingReferenced())[0];
+    return [referencedRem]
+  }
+
+  // SLOT without TAG: Property of new Type
+  if(isSlot) {
+    //await plugin.app.toast('Mistake: SLOT without TAG.' + (await getRemText(plugin, rem)) + ")");
+    return [rem];
+  }
+
+  // CONCEPT, DOCUMENT, without TAGS
+  // Case already covered with isDocument
+  //if(type === RemType.CONCEPT && isDocument && tags.length == 0) {
+  //  return rem;
+  //}
+
+  // CONCEPT with TAGS
+  // OLD: Inherits Type from TAG
+  // NEW: Inheritance no longer through TAGS but with REFS like in the case of DESCRIPTORS instead
+  if (type === RemType.CONCEPT && tags.length > 0) {
+    await plugin.app.toast('Mistake: CONCEPT with TAG. (' + await getRemText(plugin, rem) + ")");
+    return [tags[0]];
+  } 
+
+  // Inherits Type from REF
+  if(type === RemType.CONCEPT && isReferencing) {
+    const referencedRem = (await rem.remsBeingReferenced())[0];
+
+    if(parent && await isSameBaseType(plugin, referencedRem, parent))
+      return [parent, referencedRem]
+
+    return [referencedRem];
+  }
+  
+  // Concept, without TAGS
+  // Inherits Type from Rem Parent
+  if (type === RemType.CONCEPT && tags.length == 0) {
+
+      if(!parent) return [rem]; // || await getRemText(plugin, parent) == "Eigenschaften" || await getRemText(plugin, parent) == "Definition"
+
+      return [parent];
+  } 
+
+  // DESCRIPTOR with TAG. Should this happen? Cant think of a usecase
+  if(type == RemType.DESCRIPTOR && !isReferencing && tags.length > 0) {
+    //await plugin.app.toast('Potential Mistake: DESCRIPTOR with TAG.');
+    //return [tags[0]];
+
+    if(!parent) return null;
+
+    return [parent];
+}
+
+  // DESCRIPTOR without TAG
+  // Defines an interface with the type of the parent rem
+  if(type == RemType.DESCRIPTOR && !isReferencing && tags.length == 0) {
+    // Soon deprecated
+    if(!parent) return null; // || await getRemText(plugin, parent) == "Eigenschaften" || await getRemText(plugin, parent) == "Definition"
+
+    return [parent];
+  }
+
+  // REF DESCRIPTOR with TAG
+  // TODO?
+
+  // REF DESCRIPTOR without TAG
+  // Implements a layer with type of reference
+  if (type === RemType.DESCRIPTOR && isReferencing) {
+      const referencedRem = (await rem.remsBeingReferenced())[0];
+
+      const referencedClass = referencedRem; //await getParentClassType(plugin, referencedRem);
+
+      if(await referencedRem.isDocument()) {
+        //console.log("Referenced Rem is document");
+
+        return [referencedClass];
+      }
+
+      // Special case (Interface implementation/Same Type): referenced Rem's parent is an ancestor of descriptor's parent
+      // TODO: Multiple lineages?
+      if (referencedClass && parent && await isSameBaseType(plugin, referencedClass, parent)) { // await isClassAncestor(plugin, referencedClass, parent)
+
+        // TODO:
+
+        //console.log("We are here");
+
+        return [parent, referencedClass];
+      } else {
+        // Inherit from the referenced Rem's class type
+        //return getClassType(plugin, referencedRem);
+
+        //console.log("REF DESCRIPTOR " + await getRemText(plugin, rem) + " is of type " + await getRemText(plugin, referencedRem));
+
+        return [referencedRem];
+      }
+  }
+
+  return null; // Default case, though should be handled above
+} 
+
+export async function getBaseType(plugin: RNPlugin, rem: Rem): Promise<Rem> {
+  // Retrieve all ancestor lineages
+  const lineages = await getAncestorLineage(plugin, rem);
+  
+  // If there are no ancestors, the base type is the rem itself
+  if (!lineages || lineages.length === 0) {
+    return rem;
+  }
+
+  // Choose the first lineage (primary path) and take its last element
+  const primaryLineage = lineages[0];
+  if (primaryLineage.length === 0) {
+    return rem;
+  }
+
+  return primaryLineage[primaryLineage.length - 1];
+}
+
+export async function isSameBaseType(
+  plugin: RNPlugin,
+  rem1: Rem,
+  rem2: Rem
+): Promise<boolean> {
+  const [base1, base2] = await Promise.all([
+    getBaseType(plugin, rem1),
+    getBaseType(plugin, rem2),
+  ]);
+
+  return base1._id === base2._id;
+}
+
+export const specialTags = ["Document", "Template Slot", "Tag", "Tags", "Header", "Deck", "Flashcards", "Rem With An Alias", "Automatically Sort", "Document", "Highlight", "Hide Bullets", "Status"];
+
+export async function getCleanTags(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  const tagRems = await rem.getTagRems();
+  const cleanTags: Rem[] = [];
+  for (const tagRem of tagRems) {
+    const text = await getRemText(plugin, tagRem);
+    if (!specialTags.includes(text)) {
+      cleanTags.push(tagRem);
+    }
+  }
+  return cleanTags;
+}
+
 // -> index.tsx
 function formatMilliseconds(ms : number): string {
   let isNegative = false;
@@ -210,7 +409,39 @@ function formatMilliseconds(ms : number): string {
   return (isNegative ? "-" : "") + value + " " + unit + plural;
 }
 
-async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()) {
+async function getCardsOfRemUp(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()) {
+    if (processed.has(rem._id)) {
+        return [];
+    }
+    processed.add(rem._id);
+
+    let cards: Card[] = [];
+
+    const lineages = await getAncestorLineage(plugin, rem);
+
+    for(const l of lineages) {
+      for(const a of l) {
+        const ancestorCards = await getCardsOfRemDown(plugin, a, processed, addedCardIds);
+        cards = cards.concat(ancestorCards);
+      }
+    }
+
+    return cards;
+}
+
+async function isFlashcard(plugin: RNPlugin, rem: Rem): Promise <boolean> {
+
+  const children = await getCleanChildren(plugin, rem);
+
+  for(const c of children) {
+    if(await c.isCardItem())
+      return true;
+  }
+
+  return false;
+}
+
+async function getCardsOfRemDown(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()) {
     if (processed.has(rem._id)) {
         return [];
     }
@@ -230,10 +461,11 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set(), 
     
     const childrenRem = await getCleanChildrenAll(plugin, rem);
 
-    // A Reference to another Flashcard appears in the Answer of a Flashcard
+    //
     for(const c of childrenRem) {
       const refs = await c.remsBeingReferenced();
 
+      // A Reference to another Flashcard appears in the Answer of a Flashcard
       if (refs.length > 0 && (await c.isCardItem() || await c.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))) { // 
         const ref= refs[0];
 
@@ -253,9 +485,9 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set(), 
             }
           }
         }
-
-        // TODO: What to do if the Ref is a Concept?
       }
+
+      // TODO: What to do if the Ref is a Concept?
     }
 
     const childrenRef = await rem.remsReferencingThis();
@@ -286,15 +518,15 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, processed = new Set(), 
     const children = [...childrenRem, ...childrenRef];
 
     for (const child of children) {
-      const childCards = await getCardsOfRem(plugin, child, processed, addedCardIds);
+      const childCards = await getCardsOfRemDown(plugin, child, processed, addedCardIds);
       cards = cards.concat(childCards);
     }
 
     return cards;
 }
 
-async function getCardsOfRemDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
-  const allCards = await getCardsOfRem(plugin, rem);
+async function getCardsOfRemUpDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
+  const allCards = await getCardsOfRemUp(plugin, rem);
 
   // There are cards where this doesnt work.
   //const dueCards = allCards.filter(card => {
@@ -311,7 +543,85 @@ async function getCardsOfRemDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
   return dueCards;
 }
 
-async function getCardsOfRemDisabled(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()): Promise<{ id: string, text: string, nextDate: number }[]> {
+async function getCardsOfRemDownDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
+  const allCards = await getCardsOfRemDown(plugin, rem);
+
+  // There are cards where this doesnt work.
+  //const dueCards = allCards.filter(card => {
+  //  return card.nextRepetitionTime === undefined || 
+  //         (typeof card.nextRepetitionTime === 'number' && card.nextRepetitionTime <= Date.now());
+  //});
+
+  const dueCards = allCards.filter(card => {
+    const lastInterval = getLastInterval(card?.repetitionHistory);
+    return lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() < 0 : true;
+  });
+
+  //console.log("dueCards: " + dueCards.length);
+  return dueCards;
+}
+
+async function getCardsOfRemUpDisabled(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()): Promise<{ id: string, text: string, nextDate: number }[]> {
+    if (processed.has(rem._id)) {
+        return [];
+    }
+    processed.add(rem._id);
+
+    let cards: { id: string, text: string, nextDate: number }[] = [];
+    
+    const childrenRem = await getCleanChildrenAll(plugin, rem);
+
+    // Check Children for Disabled Flashcards
+    for(const c of childrenRem) {
+      //console.log(name + ": Direction" + await c.getEnablePractice())
+      if(!(await c.getEnablePractice()) && await isFlashcard(plugin, c)) {
+        //console.log("Adding " + name + "(" + c._id + ")");
+        if (!addedCardIds.has(c._id)) {
+          addedCardIds.add(c._id);
+
+          const name = await getRemText(plugin, c);
+          cards.push({ id: c._id, text: name, nextDate: 0 });
+        }
+      } else {
+        //console.log(name + " has no PowerUp.DisableCards");
+      }
+    }
+
+    //
+    const childrenRef = await rem.remsReferencingThis();
+
+    // Check for Questions where the current Question appears as an Answer.
+    for (const r of childrenRef) {
+      if (await r.isCardItem() || await r.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) { // 
+          const question = await r.getParentRem();
+          if (question && !(await question.getEnablePractice())) {
+            if (!addedCardIds.has(question._id)) {
+              addedCardIds.add(question._id);
+              cards.push({id: question._id, text: await getRemText(plugin, question), nextDate: 0});
+            } 
+          }
+      }
+    }
+
+    //const children = [...childrenRem, ...childrenRef];
+    //for (const child of children) {
+    //  const childCards = await getCardsOfRemDown(plugin, child, processed, addedCardIds);
+    //  cards = cards.concat(childCards);
+    //}
+
+    const lineages = await getAncestorLineage(plugin, rem);
+
+    for(const l of lineages) {
+      for(const a of l) {
+        const ancestorCards = await getCardsOfRemDownDisabled(plugin, a, processed, addedCardIds);
+        cards = cards.concat(ancestorCards);
+      }
+    }
+
+    return cards;
+}
+
+async function getCardsOfRemDownDisabled(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()): Promise<{ id: string, text: string, nextDate: number }[]> {
   if (processed.has(rem._id)) {
         return [];
     }
@@ -325,7 +635,7 @@ async function getCardsOfRemDisabled(plugin: RNPlugin, rem: Rem, processed = new
   // Check Children for Disabled Flashcards
   for(const c of childrenRem) {
     //console.log(name + ": Direction" + await c.getEnablePractice())
-    if(!(await c.getEnablePractice())) {
+    if(!(await c.getEnablePractice()) && await isFlashcard(plugin, c)) {
       //console.log("Adding " + name + "(" + c._id + ")");
       if (!addedCardIds.has(c._id)) {
         addedCardIds.add(c._id);
@@ -346,7 +656,7 @@ async function getCardsOfRemDisabled(plugin: RNPlugin, rem: Rem, processed = new
       const ref = refs[0];
 
       // If the Ref is a Disabled Flashcard, add it.
-      if(!(await ref.getEnablePractice())) {
+      if(!(await ref.getEnablePractice()) && await isFlashcard(plugin, c)) {
 
         if (!addedCardIds.has(ref._id)) {
           addedCardIds.add(ref._id);
@@ -378,7 +688,7 @@ async function getCardsOfRemDisabled(plugin: RNPlugin, rem: Rem, processed = new
   // Recursion
   const children = [...childrenRem, ...childrenRef];
   for (const c of children) {
-    const childCards = await getCardsOfRemDisabled(plugin, c, processed, addedCardIds);
+    const childCards = await getCardsOfRemDownDisabled(plugin, c, processed, addedCardIds);
     cards = cards.concat(childCards);
   }
 
@@ -389,7 +699,7 @@ async function loadCards(plugin: RNPlugin, rem: Rem | undefined, cardIds: string
     if(!rem)
         return [];
 
-    const allCards = await getCardsOfRem(plugin, rem);
+    const allCards = await getCardsOfRemDown(plugin, rem);
     const cardIdSet = new Set(cardIds);
     const filteredCards = allCards.filter(card => cardIdSet.has(card._id));
     return filteredCards;
@@ -717,6 +1027,9 @@ function CustomQueueWidget() {
     const [cardsData, setCardsData] = useState<{ id: string, text: string , nextDate: number}[]>([]);
     const [sortAscending, setSortAscending] = useState<boolean>(true);
 
+    //
+    const [selectedOption, setSelectedOption] = useState('All');
+
     const currentRem = useTracker(async (reactPlugin) => {
             return await reactPlugin.focus.getFocusedRem();
         }
@@ -773,7 +1086,7 @@ function CustomQueueWidget() {
       updateSelectedRemText();
     }, [currentRem]); // focusedRem
 
-    const loadCurrentRemQueue = async () => {
+    const loadRemQueue = async (setting: string) => {
       //console.log(await getRemText(plugin, focusedRem));
 
       setCardIds([]);
@@ -788,7 +1101,15 @@ function CustomQueueWidget() {
               setLoading(true);
               const text = await getRemText(plugin, currentFocusedRem);
               setQueueRemText(text);
-              const fetchedCards = await getCardsOfRem(plugin, currentFocusedRem);
+
+              //const fetchedCards = await getCardsOfRemDown(plugin, currentFocusedRem);
+              let fetchedCards: Card[] = [];
+              if(setting == "SETTING_DOWN")
+                fetchedCards = await getCardsOfRemDown(plugin, currentFocusedRem);
+
+              if(setting == "SETTING_UP")
+                fetchedCards = await getCardsOfRemUp(plugin, currentFocusedRem);
+
               const ids = fetchedCards.map((c) => c._id);
               setCardIds(ids);
               setCards(fetchedCards);
@@ -803,7 +1124,7 @@ function CustomQueueWidget() {
       }
     };
 
-    const loadCurrentRemQueueDue = async () => {
+    const loadRemQueueDue = async (setting: string) => {
         setCardIds([]);
         setCards([]);
         setCardsData([]);
@@ -816,7 +1137,14 @@ function CustomQueueWidget() {
                 setLoading(true);
                 const text = await getRemText(plugin, currentFocusedRem);
                 setQueueRemText(text);
-                const fetchedCards = await getCardsOfRemDue(plugin, currentFocusedRem);
+                //const fetchedCards = await getCardsOfRemDownDue(plugin, currentFocusedRem);
+                let fetchedCards: Card[] = [];
+                if(setting == "SETTING_DOWN")
+                  fetchedCards = await getCardsOfRemDownDue(plugin, currentFocusedRem);
+
+                if(setting == "SETTING_UP")
+                  fetchedCards = await getCardsOfRemUpDue(plugin, currentFocusedRem);
+
                 const ids = fetchedCards.map((c) => c._id);
                 setCardIds(ids);
                 setCards(fetchedCards);
@@ -831,7 +1159,7 @@ function CustomQueueWidget() {
         }
     };
 
-    const loadCurrentRemQueueDisabled = async () => {
+    const loadRemQueueDisabled = async (setting: string) => {
       setCardIds([]);
       setCards([]);
       setCardsData([]);
@@ -845,13 +1173,29 @@ function CustomQueueWidget() {
           setLoading(true);
           const text = await getRemText(plugin, currentFocusedRem);
           setQueueRemText(text);
-          setCardsData(await getCardsOfRemDisabled(plugin, currentFocusedRem));
+          ////
+          if(setting == "SETTING_DOWN")
+            setCardsData(await getCardsOfRemDownDisabled(plugin, currentFocusedRem));
+
+          if(setting == "SETTING_UP")
+            setCardsData(await getCardsOfRemUpDisabled(plugin, currentFocusedRem));
+
           setLoading(false);
           setFocusedRem(currentFocusedRem);
           setIsTableExpanded(false);
         };
 
         updateCardsList();
+      }
+    };
+
+    const handleSearchDown = (setting: string) => {
+      if (selectedOption === 'All') {
+        loadRemQueue(setting);
+      } else if (selectedOption === 'Due') {
+        loadRemQueueDue(setting);
+      } else if (selectedOption === 'Disabled') {
+        loadRemQueueDisabled(setting);
       }
     };
 
@@ -929,22 +1273,27 @@ function CustomQueueWidget() {
             border: "1px solid #ddd",
             marginRight: "20px",
           }}>
-        <div> Practice Flashcards from {selectedRemText}</div>
-        <MyRemNoteButton
-          text="All"
-          onClick={loadCurrentRemQueue}
-          img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
-        />
-        <MyRemNoteButton
-          text="Due"
-          onClick={loadCurrentRemQueueDue}
-          img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
-        />
-        <MyRemNoteButton
-          text="Disabled"
-          onClick={loadCurrentRemQueueDisabled}
-          img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
-        />
+        <div>Practice Flashcards from {selectedRemText}</div>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <select
+            value={selectedOption}
+            onChange={(e) => setSelectedOption(e.target.value)}
+          >
+            <option value="All">All</option>
+            <option value="Due">Due</option>
+            <option value="Disabled">Disabled</option>
+          </select>
+          <MyRemNoteButton
+            text="Practice Descendants"
+            onClick={async () => {handleSearchDown("SETTING_DOWN")}}
+            img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
+          />
+          <MyRemNoteButton
+            text="Practice All"
+            onClick={async () => {handleSearchDown("SETTING_UP")}}
+            img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
+          />
+        </div>
       </div>
     </div>
     {loading ? (
@@ -1117,7 +1466,7 @@ function CustomQueueWidget() {
         </div>
       </div>
     ) : (
-      <div>No cards to display. CardIds is empty: {JSON.stringify(cardIds)}</div>
+      <div>No cards to display. cardsData is empty: {JSON.stringify(cardsData)}</div>
     )}
   </div>
 );
