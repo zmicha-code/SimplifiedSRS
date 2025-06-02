@@ -68,32 +68,55 @@ async function getRemText(plugin: RNPlugin, rem: Rem | undefined, extentedName =
 
     let richText = rem.text;
 
+    // Special case, where text of rem only consists of a reference.
+    // q: Ref
+    // m: Link
+    if(richText && richText.length == 1 && (richText[0].i == 'q' || richText[0].i == 'm')) {
+
+      let propertyText = "";
+
+      if(richText[0].i == 'q') {
+        const referencedRem = await plugin.rem.findOne(richText[0]._id);
+        propertyText = await getRemText(plugin, referencedRem)
+      }
+
+      if(richText[0].i == 'm') {
+        propertyText = richText[0].text;
+      }
+
+      const parentRem =  rem.getParentRem ? await rem.getParentRem() : await (await plugin.rem.findOne(rem._id))?.getParentRem(); // await rem.getParentRem() -> "getParentRem is not a function"
+      const parentText = parentRem ? await getRemText(plugin, parentRem) : "";
+
+      return parentText + " > " + propertyText;
+    }
+
     const textPartsPromises = richText ? richText.map(async (item) => {
     if (typeof item === "string") {
-    if(extentedName && await rem.getType() == RemType.DESCRIPTOR) {
-    const parentRem = await rem.getParentRem();
+      if(extentedName && await rem.getType() == RemType.DESCRIPTOR) {
+        const parentRem = await rem.getParentRem();
 
-    if(parentRem)
-        return await getRemText(plugin, parentRem) + ">" + item;
+        if(parentRem)
+            return await getRemText(plugin, parentRem) + ">" + item;
+      }
+      return item;
     }
-    return item;
-    }
+
     switch (item.i) {
     case 'q':
-    const referencedRem = await plugin.rem.findOne(item._id);
-    if (referencedRem) {
-        if(extentedName) {
-        const refParentRem = await rem.getParentRem();
+      const referencedRem = await plugin.rem.findOne(item._id);
+      if (referencedRem) {
+          if(extentedName) {
+          const refParentRem = await rem.getParentRem();
 
-        if(refParentRem)
-            return await getRemText(plugin, refParentRem, true) + ">" + await getRemText(plugin, referencedRem);
-        }
+          if(refParentRem)
+              return await getRemText(plugin, refParentRem, true) + ">" + await getRemText(plugin, referencedRem);
+          }
 
-        return await getRemText(plugin, referencedRem);
-    } else if (item.textOfDeletedRem) {
-        return await processRichText(plugin, item.textOfDeletedRem);
-    }
-    return "";
+          return await getRemText(plugin, referencedRem);
+      } else if (item.textOfDeletedRem) {
+          return await processRichText(plugin, item.textOfDeletedRem);
+      }
+      return "";
     case 'i': return item.url;
     case 'a': return item.url;
     case 'p': return item.url;
@@ -101,15 +124,15 @@ async function getRemText(plugin: RNPlugin, rem: Rem | undefined, extentedName =
     case 'm':
     case 'x': 
     case 'n':
-    if(extentedName && await rem.getType() == RemType.DESCRIPTOR) {
-        const parentRem = await rem.getParentRem();
+      if(extentedName && await rem.getType() == RemType.DESCRIPTOR) {
+          const parentRem = await rem.getParentRem();
 
-        if(parentRem)
-            return await getRemText(plugin, parentRem) + ">" + item.text;
-    }
-    return item.text;
-    case 's': return "";
-    default: return "";
+          if(parentRem)
+              return await getRemText(plugin, parentRem) + ">" + item.text;
+      }
+      return item.text;
+      case 's': return "";
+      default: return "";
     }
     }) : [];
 
