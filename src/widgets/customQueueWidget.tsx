@@ -367,7 +367,7 @@ export async function getCleanTags(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
 }
 
 // -> index.tsx
-function formatMilliseconds(ms : number): string {
+function formatMilliseconds(ms : number, abs = false): string {
   let isNegative = false;
 
   if (ms === 0) return 'New Card'; // Special case for zero // "0 seconds"
@@ -406,7 +406,7 @@ function formatMilliseconds(ms : number): string {
   // Pluralize unit if value isn’t 1
   const plural = value !== 1 ? 's' : '';
   //return `${value} ${unit}${plural}`;
-  return (isNegative ? "-" : "") + value + " " + unit + plural;
+  return (isNegative && !abs ? "-" : "") + value + " " + unit + plural;
 }
 
 async function getCardsOfRemUp(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()) {
@@ -1017,6 +1017,7 @@ function CustomQueueWidget() {
     const [currentCardId, setCurrentCardId] = useState<string | undefined>(undefined);
     const [currentCardText, setCurrentCardText] = useState<string>("");
     const [currentCardLastInterval, setCurrentCardLastInterval] = useState<string>("");
+    const [currentCardLastPractice, setCurrentCardLastPractice] = useState<string>("");
     const [currentCardRepetitionTiming, setcurrentCardRepetitionTiming] = useState<number>(0);
     const [currentCardLastRating, setcurrentCardLastRating] = useState<string>("");
     const [isTableExpanded, setIsTableExpanded] = useState<boolean>(false);
@@ -1207,6 +1208,7 @@ function CustomQueueWidget() {
             const rem = await currentCard?.getRem();
             const lastInterval = getLastInterval(currentCard?.repetitionHistory);
             setCurrentCardLastInterval(lastInterval ? formatMilliseconds(lastInterval.workingInterval) : "");
+            setCurrentCardLastPractice(lastInterval ? (formatMilliseconds(lastInterval.intervalSetOn - Date.now(), true) + " ago") : "");
             setcurrentCardRepetitionTiming(lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() : 0);
             setcurrentCardLastRating(getLastRatingStr(currentCard?.repetitionHistory));
         }
@@ -1397,33 +1399,10 @@ function CustomQueueWidget() {
             >
               <thead>
                 <tr>
-                  <th
-                    style={{
-                      border: "1px solid #ddd",
-                      padding: 8,
-                      textAlign: "left",
-                    }}
-                  >
-                    Date
-                  </th>
-                  <th
-                    style={{
-                      border: "1px solid #ddd",
-                      padding: 8,
-                      textAlign: "left",
-                    }}
-                  >
-                    Last Interval
-                  </th>
-                  <th
-                    style={{
-                      border: "1px solid #ddd",
-                      padding: 8,
-                      textAlign: "left",
-                    }}
-                  >
-                    Last Rating
-                  </th>
+                  <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", }}> Due </th>
+                  <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", }}> Interval </th>
+                  <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", }}> Last Rating </th>
+                  <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", }}> Last Practice </th>
                 </tr>
               </thead>
               <tbody>
@@ -1440,6 +1419,9 @@ function CustomQueueWidget() {
                   </td>
                   <td style={{ border: "1px solid #ddd", padding: 8 }}>
                     {currentCardLastRating}
+                  </td>
+                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
+                    {currentCardLastPractice}
                   </td>
                 </tr>
               </tbody>
