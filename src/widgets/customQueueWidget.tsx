@@ -151,7 +151,7 @@ async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
     for (const childRem of childrenRems) {
     const text = await getRemText(plugin, childRem);
     if (!specialNames.includes(text)) {
-    cleanChildren.push(childRem);
+      cleanChildren.push(childRem);
     }
 }
 return cleanChildren;
@@ -230,6 +230,19 @@ export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Re
     //return tags[0];
     return null;
   } 
+
+  //
+  if(isDocument && isReferencing) {
+    const referencedRem = (await rem.remsBeingReferenced())[0];
+
+    if(await referencedRem.isDocument()) {
+      //console.log("Referenced Rem is document");
+
+      return [referencedRem];
+    } else {
+      await plugin.app.toast('Mistake: A DOCUMENT should never reference anything other than DOCUMENT. (' + await getRemText(plugin, rem) + ")");
+    }
+  }
 
   // DOCUMENT without TAGS. Defines a new Type. Has no other parent Type
   if (isDocument)
@@ -432,26 +445,6 @@ function formatMilliseconds(ms : number, abs = false): string {
   return (isNegative && !abs ? "-" : "") + value + " " + unit + plural;
 }
 
-async function getCardsOfRemUp(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()) {
-    if (processed.has(rem._id)) {
-        return [];
-    }
-    processed.add(rem._id);
-
-    let cards: Card[] = [];
-
-    const lineages = await getAncestorLineage(plugin, rem);
-
-    for(const l of lineages) {
-      for(const a of l) {
-        const ancestorCards = await getCardsOfRemDown(plugin, a, processed, addedCardIds);
-        cards = cards.concat(ancestorCards);
-      }
-    }
-
-    return cards;
-}
-
 async function isFlashcard(plugin: RNPlugin, rem: Rem): Promise <boolean> {
 
   const children = await getCleanChildren(plugin, rem);
@@ -464,271 +457,266 @@ async function isFlashcard(plugin: RNPlugin, rem: Rem): Promise <boolean> {
   return false;
 }
 
-async function getCardsOfRemDown(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()) {
-    if (processed.has(rem._id)) {
-        return [];
-    }
-    processed.add(rem._id);
+async function getFlashcard(plugin: RNPlugin, rem: Rem): Promise <Card[]> {
 
-    let cards: Card[] = [];
+  const children = await getCleanChildren(plugin, rem);
 
-    const remCards = await rem.getCards();
+  for(const c of children) {
+    if(await c.isCardItem())
+      return await c.getCards();
+  }
 
-    //cards = cards.concat(remCards);
-    for(const c of remCards) {
-      if (!addedCardIds.has(c._id)) {
-        addedCardIds.add(c._id);
-        cards.push(c);
-      }
-    }
-    
-    const childrenRem = await getCleanChildrenAll(plugin, rem);
-
-    //
-    for(const c of childrenRem) {
-      const refs = await c.remsBeingReferenced();
-
-      // A Reference to another Flashcard appears in the Answer of a Flashcard
-      if (refs.length > 0 && (await c.isCardItem() || await c.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))) { // 
-        const ref= refs[0];
-
-        // If the Ref is a Flashcard, add it.
-        if((await ref.getCards()).length > 0) {
-          //const isQuestionInCards = cards.some(card => card.remId === ref._id);
-          //if (!isQuestionInCards) {
-          //    const questionCards = await ref.getCards();
-          //    cards = cards.concat(questionCards);
-          //}
-          const questionCards = await ref.getCards();
-
-          for(const c of questionCards) {
-            if (!addedCardIds.has(c._id)) {
-              addedCardIds.add(c._id);
-              cards.push(c);
-            }
-          }
-        }
-      }
-
-      // TODO: What to do if the Ref is a Concept?
-    }
-
-    const childrenRef = await rem.remsReferencingThis();
-
-    // Check for Questions where the current Question appears as an Answer.
-    for (const r of childrenRef) {
-        if (await r.isCardItem() || await r.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) { // 
-            const question = await r.getParentRem();
-            if (question) {
-                const questionId = question._id;
-                //const isQuestionInCards = cards.some(card => card.remId === questionId);
-                //if (!isQuestionInCards) {
-                //    const questionCards = await question.getCards();
-                //    cards = cards.concat(questionCards);
-                //}
-                const questionCards = await question.getCards();
-
-                for(const c of questionCards) {
-                  if (!addedCardIds.has(c._id)) {
-                    addedCardIds.add(c._id);
-                    cards.push(c);
-                  }
-                }
-            }
-        }
-    }
-
-    const children = [...childrenRem, ...childrenRef];
-
-    for (const child of children) {
-      const childCards = await getCardsOfRemDown(plugin, child, processed, addedCardIds);
-      cards = cards.concat(childCards);
-    }
-
-    return cards;
+  return [];
 }
 
-async function getCardsOfRemUpDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
-  const allCards = await getCardsOfRemUp(plugin, rem);
-
-  // There are cards where this doesnt work.
-  //const dueCards = allCards.filter(card => {
-  //  return card.nextRepetitionTime === undefined || 
-  //         (typeof card.nextRepetitionTime === 'number' && card.nextRepetitionTime <= Date.now());
-  //});
-
-  const dueCards = allCards.filter(card => {
-    const lastInterval = getLastInterval(card?.repetitionHistory);
-    return lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() < 0 : true;
-  });
-
-  //console.log("dueCards: " + dueCards.length);
-  return dueCards;
+interface SearchOptions {
+  due: boolean,
+  disabled: boolean,
+  includePortals: boolean,
+  bothDirections: boolean // otherwise Down
 }
 
-async function getCardsOfRemDownDue(plugin: RNPlugin, rem: Rem): Promise<Card[]> {
-  const allCards = await getCardsOfRemDown(plugin, rem);
-
-  // There are cards where this doesnt work.
-  //const dueCards = allCards.filter(card => {
-  //  return card.nextRepetitionTime === undefined || 
-  //         (typeof card.nextRepetitionTime === 'number' && card.nextRepetitionTime <= Date.now());
-  //});
-
-  const dueCards = allCards.filter(card => {
-    const lastInterval = getLastInterval(card?.repetitionHistory);
-    return lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() < 0 : true;
-  });
-
-  //console.log("dueCards: " + dueCards.length);
-  return dueCards;
+// Helper function assumed to be defined elsewhere
+function isDue(card: Card): boolean {
+  const lastInterval = getLastInterval(card?.repetitionHistory);
+  return lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() < 0 : true;
 }
 
-async function getCardsOfRemUpDisabled(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()): Promise<{ id: string, text: string, nextDate: number }[]> {
-    if (processed.has(rem._id)) {
-        return [];
-    }
-    processed.add(rem._id);
-
-    let cards: { id: string, text: string, nextDate: number }[] = [];
-    
-    const childrenRem = await getCleanChildrenAll(plugin, rem);
-
-    // Check Children for Disabled Flashcards
-    for(const c of childrenRem) {
-      //console.log(name + ": Direction" + await c.getEnablePractice())
-      if(!(await c.getEnablePractice()) && await isFlashcard(plugin, c)) {
-        //console.log("Adding " + name + "(" + c._id + ")");
-        if (!addedCardIds.has(c._id)) {
-          addedCardIds.add(c._id);
-
-          const name = await getRemText(plugin, c);
-          cards.push({ id: c._id, text: name, nextDate: 0 });
-        }
-      } else {
-        //console.log(name + " has no PowerUp.DisableCards");
-      }
-    }
-
-    //
-    const childrenRef = await rem.remsReferencingThis();
-
-    // Check for Questions where the current Question appears as an Answer.
-    for (const r of childrenRef) {
-      if (await r.isCardItem() || await r.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) { // 
-          const question = await r.getParentRem();
-          if (question && !(await question.getEnablePractice())) {
-            if (!addedCardIds.has(question._id)) {
-              addedCardIds.add(question._id);
-              cards.push({id: question._id, text: await getRemText(plugin, question), nextDate: 0});
-            } 
-          }
-      }
-    }
-
-    //const children = [...childrenRem, ...childrenRef];
-    //for (const child of children) {
-    //  const childCards = await getCardsOfRemDown(plugin, child, processed, addedCardIds);
-    //  cards = cards.concat(childCards);
-    //}
-
-    const lineages = await getAncestorLineage(plugin, rem);
-
-    for(const l of lineages) {
-      for(const a of l) {
-        const ancestorCards = await getCardsOfRemDownDisabled(plugin, a, processed, addedCardIds);
-        cards = cards.concat(ancestorCards);
-      }
-    }
-
-    return cards;
-}
-
-async function getCardsOfRemDownDisabled(plugin: RNPlugin, rem: Rem, processed = new Set(), addedCardIds = new Set()): Promise<{ id: string, text: string, nextDate: number }[]> {
-  if (processed.has(rem._id)) {
-        return [];
-    }
+async function getCardsOfRem(
+  plugin: RNPlugin,
+  rem: Rem,
+  searchOptions: SearchOptions,
+  processed = new Set<string>(),
+  addedCardIds = new Set<string>()
+): Promise<Card[]> {
+  if (processed.has(rem._id)) return [];
   processed.add(rem._id);
 
-  let cards: { id: string, text: string, nextDate: number }[] = [];
+  let cards: Card[] = [];
 
-  //
+  if(!rem) return cards;
+
+  // Handle upward direction if bothDirections is true
+  if (searchOptions.bothDirections) {
+    const lineages = await getAncestorLineage(plugin, rem);
+    for (const lineage of lineages) {
+        for (const ancestor of lineage) {
+            const ancestorCards = await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
+            cards = cards.concat(ancestorCards);
+        }
+    }
+  }
+
+  // Add cards from the current rem, filtered by due if specified
+  const remCards = rem.getCards ? await rem.getCards() : [];
+  for (const card of remCards) {
+    if (!addedCardIds.has(card._id)) {
+      addedCardIds.add(card._id);
+      if (!searchOptions.due || isDue(card)) {
+        cards.push(card);
+      }
+    }
+  }
+
+  // Handle portals if includePortals is true
+  if (searchOptions.includePortals) {
+    const childrenRem = await getCleanChildren(plugin, rem);
+
+    for (const child of childrenRem) {
+      if (await child.getType() === RemType.PORTAL) {
+          const rems = await child.getPortalDirectlyIncludedRem();
+
+          //console.log("In Portal:");
+          for(const r of rems) {
+            //console.log(await getRemText(plugin, r))
+            // Using r instead of await plugin.rem.findOne(r._id) throws a runtime error
+            cards = cards.concat(await getCardsOfRem(plugin, await plugin.rem.findOne(r._id) as Rem, { ...searchOptions, bothDirections: false }, processed, addedCardIds));
+          }
+      }
+    }
+  }
+  
+  // Get descendants and referencing rems for recursion and reference handling
   const childrenRem = await getCleanChildrenAll(plugin, rem);
 
-  // Check Children for Disabled Flashcards
-  for(const c of childrenRem) {
-    //console.log(name + ": Direction" + await c.getEnablePractice())
-    if(!(await c.getEnablePractice()) && await isFlashcard(plugin, c)) {
-      //console.log("Adding " + name + "(" + c._id + ")");
-      if (!addedCardIds.has(c._id)) {
-        addedCardIds.add(c._id);
-
-        const name = await getRemText(plugin, c);
-        cards.push({ id: c._id, text: name, nextDate: 0 });
-      }
-    } else {
-      //console.log(name + " has no PowerUp.DisableCards");
-    }
-  }
-
-  // A Reference to another Question appears in the Answer of a Flashcard
-  for(const c of childrenRem) {
-    const refs = await c.remsBeingReferenced();
-
-    if (refs.length > 0 && (await c.isCardItem() || await c.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))) { // 
+  // Handle references in descendants (e.g., flashcards referenced in answers)
+  for (const child of childrenRem) {
+    const refs = await child.remsBeingReferenced();
+    if (refs.length > 0 && (await child.isCardItem() || await child.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))) {
       const ref = refs[0];
-
-      // If the Ref is a Disabled Flashcard, add it.
-      if(!(await ref.getEnablePractice()) && await isFlashcard(plugin, c)) {
-
-        if (!addedCardIds.has(ref._id)) {
-          addedCardIds.add(ref._id);
-          const name = await getRemText(plugin, ref);
-          cards.push({id: ref._id, text: name, nextDate: 0});
+      const refCards = await ref.getCards();
+      for (const card of refCards) {
+        if (!addedCardIds.has(card._id)) {
+          addedCardIds.add(card._id);
+          if (!searchOptions.due || isDue(card)) {
+            cards.push(card);
+          }
         }
       }
-
-      // TODO: What to do if the Ref is a Concept?
     }
   }
 
-  //
+  // Handle rems referencing this rem (e.g., questions where this rem is an answer)
   const childrenRef = await rem.remsReferencingThis();
-
-  // Check for Questions where the current Question appears as an Answer.
-  for (const r of childrenRef) {
-    if (await r.isCardItem() || await r.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) { // 
-        const question = await r.getParentRem();
-        if (question && !(await question.getEnablePractice())) {
-          if (!addedCardIds.has(question._id)) {
-            addedCardIds.add(question._id);
-            cards.push({id: question._id, text: await getRemText(plugin, question), nextDate: 0});
-          } 
+  for (const ref of childrenRef) {
+    if (await ref.isCardItem() || await ref.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) {
+      const question = await ref.getParentRem();
+      if (question) {
+        const questionCards = await question.getCards();
+        for (const card of questionCards) {
+          if (!addedCardIds.has(card._id)) {
+            addedCardIds.add(card._id);
+            if (!searchOptions.due || isDue(card)) {
+              cards.push(card);
+            }
+          }
         }
+      }
     }
   }
 
-  // Recursion
+  // Recurse into descendants and referencing rems
   const children = [...childrenRem, ...childrenRef];
-  for (const c of children) {
-    const childCards = await getCardsOfRemDownDisabled(plugin, c, processed, addedCardIds);
-    cards = cards.concat(childCards);
+  for (const child of children) {
+    cards = cards.concat(await getCardsOfRem(plugin, child, searchOptions, processed, addedCardIds));
   }
 
   return cards;
+}
+
+interface DisabledRemInfo {
+  id: string;
+  text: string;
+  nextDate: number;
+}
+
+async function getDisabledRem(
+  plugin: RNPlugin,
+  rem: Rem,
+  searchOptions: SearchOptions,
+  processed = new Set<string>(),
+  addedRemIds = new Set<string>()
+): Promise<DisabledRemInfo[]> {
+  // Prevent infinite loops by skipping processed rems
+  if (processed.has(rem._id)) return [];
+  processed.add(rem._id);
+
+  let disabledRems: DisabledRemInfo[] = [];
+
+  // Handle upward direction if bothDirections is true
+  if (searchOptions.bothDirections) {
+    const lineages = await getAncestorLineage(plugin, rem);
+    for (const lineage of lineages) {
+      for (const ancestor of lineage) {
+        const ancestorDisabledRems = await getDisabledRem(
+          plugin,
+          ancestor,
+          { ...searchOptions, bothDirections: false }, // Avoid infinite upward recursion
+          processed,
+          addedRemIds
+        );
+        disabledRems = disabledRems.concat(ancestorDisabledRems);
+      }
+    }
+  }
+
+  // Check if the current rem is a disabled flashcard
+  if (!(await rem.getEnablePractice()) && (await isFlashcard(plugin, rem))) {
+    if (!addedRemIds.has(rem._id)) {
+      addedRemIds.add(rem._id);
+      const text = await getRemText(plugin, rem);
+      disabledRems.push({ id: rem._id, text, nextDate: 0 });
+    }
+  }
+
+  // Handle portals if includePortals is true
+  if (searchOptions.includePortals) {
+    const childrenRem = await getCleanChildren(plugin, rem);
+    for (const child of childrenRem) {
+      if (await child.getType() === RemType.PORTAL) {
+        const portalRems = await child.getPortalDirectlyIncludedRem();
+        for (const pRem of portalRems) {
+          const portalDisabledRems = await getDisabledRem(
+            plugin,
+            await plugin.rem.findOne(pRem._id) as Rem,
+            { ...searchOptions, bothDirections: false }, // Limit direction in portals
+            processed,
+            addedRemIds
+          );
+          disabledRems = disabledRems.concat(portalDisabledRems);
+        }
+      }
+    }
+  }
+
+  // Get all children and referencing rems for further processing
+  const childrenRem = await getCleanChildrenAll(plugin, rem);
+
+  // Handle references in descendants (e.g., disabled flashcards referenced in answers)
+  for (const child of childrenRem) {
+    const refs = await child.remsBeingReferenced();
+    if (
+      refs.length > 0 &&
+      (await child.isCardItem() || await child.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))
+    ) {
+      const ref = refs[0];
+      if (!(await ref.getEnablePractice()) && (await isFlashcard(plugin, ref))) {
+        if (!addedRemIds.has(ref._id)) {
+          addedRemIds.add(ref._id);
+          const text = await getRemText(plugin, ref);
+          disabledRems.push({ id: ref._id, text, nextDate: 0 });
+        }
+      }
+    }
+  }
+
+  // Handle rems referencing this rem (e.g., questions where this rem is an answer)
+  const childrenRef = await rem.remsReferencingThis();
+  for (const ref of childrenRef) {
+    if (
+      await ref.isCardItem() || 
+      await ref.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)
+    ) {
+      const question = await ref.getParentRem();
+      if (question && !(await question.getEnablePractice())) {
+        if (!addedRemIds.has(question._id)) {
+          addedRemIds.add(question._id);
+          const text = await getRemText(plugin, question);
+          disabledRems.push({ id: question._id, text, nextDate: 0 });
+        }
+      }
+    }
+  }
+
+  // Recurse into descendants and referencing rems
+  const children = [...childrenRem, ...childrenRef];
+  for (const child of children) {
+    const childDisabledRems = await getDisabledRem(
+      plugin,
+      child,
+      searchOptions,
+      processed,
+      addedRemIds
+    );
+    disabledRems = disabledRems.concat(childDisabledRems);
+  }
+
+  return disabledRems;
 }
 
 async function loadCards(plugin: RNPlugin, rem: Rem | undefined, cardIds: string[]): Promise<Card[]> {
     if(!rem)
         return [];
 
-    const allCards = await getCardsOfRemDown(plugin, rem);
-    const cardIdSet = new Set(cardIds);
-    const filteredCards = allCards.filter(card => cardIdSet.has(card._id));
-    return filteredCards;
+    // Cant use this after introducing multiple search options and not just RemDown
+    //const allCards = await getCardsOfRemDown(plugin, rem);
+    //const cardIdSet = new Set(cardIds);
+    //const filteredCards = allCards.filter(card => cardIdSet.has(card._id));
+    //return filteredCards;
+    return plugin.card.findMany(cardIds);
 }
 
-function getLastRatingStr(history: RepetitionStatus[] | undefined): string {
+function getLastRatingStr_(history: RepetitionStatus[] | undefined): string {
   // Handle undefined or empty array
   if (!history || history.length === 0) {
       return "";
@@ -759,6 +747,49 @@ function getLastRatingStr(history: RepetitionStatus[] | undefined): string {
 
   // Return empty string if all scores are TOO_EARLY or VIEWED_AS_LEECH
   return "";
+}
+
+function getLastRatingStr(history: RepetitionStatus[] | undefined, count: number = 1): string[] {
+    // Handle undefined or empty array
+    if (!history || history.length === 0) {
+        return [];
+    }
+
+    const result: string[] = [];
+
+    // Iterate from the last element to the first
+    for (let i = history.length - 1; i >= 0; i--) {
+        const score = history[i].score;
+        // Skip TOO_EARLY and VIEWED_AS_LEECH
+        if (score !== QueueInteractionScore.TOO_EARLY && score !== QueueInteractionScore.VIEWED_AS_LEECH) {
+            let ratingStr = "";
+            switch (score) {
+                case QueueInteractionScore.AGAIN:
+                    ratingStr = "Forgot";
+                    break;
+                case QueueInteractionScore.HARD:
+                    ratingStr = "Partially recalled";
+                    break;
+                case QueueInteractionScore.GOOD:
+                    ratingStr = "Recalled with effort";
+                    break;
+                case QueueInteractionScore.EASY:
+                    ratingStr = "Easily recalled";
+                    break;
+                case QueueInteractionScore.RESET:
+                    ratingStr = "Reset";
+                    break;
+                default:
+                    continue; // Skip unexpected scores
+            }
+            result.push(ratingStr);
+            if (result.length === count) {
+                break;
+            }
+        }
+    }
+
+    return result;
 }
 
 export function getLastInterval(history: RepetitionStatus[] | undefined): {workingInterval: number, intervalSetOn: number} | undefined {
@@ -799,241 +830,11 @@ async function questionsFromCards(plugin: RNPlugin, cards: Card[]): Promise<{ id
     return questions;
 }
 
-/*
-function CustomQueueWidget_() {
-    const plugin = usePlugin();
-    const [focusedRem, setFocusedRem] = useState<Rem | undefined>(undefined);
-    const [loading, setLoading] = useState<boolean>(false);
-    const [cardIds, setCardIds] = useState<string[]>([]);
-    const [cards, setCards] = useState<Card[]>([]);
-    const [currentCardId, setCurrentCardId] = useState<string | undefined>(undefined);
-    const [currentCardText, setCurrentCardText] = useState<string>("");
-    const [currentCardLastInterval, setCurrentCardLastInterval] = useState<string>("");
-    const [currentCardRepetitionTiming, setcurrentCardRepetitionTiming] = useState<number>(0);
-    const [currentCardLastRating, setcurrentCardLastRating] = useState<string>("");
-    const [isTableExpanded, setIsTableExpanded] = useState<boolean>(false);
-    const [focusedRemText, setFocusedRemText] = useState<string>("");
-
-    const [isListExpanded, setIsListExpanded] = useState<boolean>(false);
-    const [cardsStr, setCardsStr] = useState<string[]>([]);
-  
-    // Load persisted state on mount
-    useEffect(() => {
-      const initFromStorage = async () => {
-        const currentQueueRemId: string | undefined = await plugin.storage.getSynced("currentQueueRemId");
-        const currentQueueCardIds: string[] = (await plugin.storage.getSynced("currentQueueCardIds")) || [];
-        if (currentQueueRemId && currentQueueCardIds.length > 0) {
-          const rem = await plugin.rem.findOne(currentQueueRemId);
-          if (rem) {
-            setFocusedRem(rem);
-            setCardIds(currentQueueCardIds);
-            const loadedCards = await loadCards(plugin, rem, currentQueueCardIds);
-            setCards(loadedCards);
-            //
-            setCardsStr(await questionsFromCards(plugin, loadedCards));
-            
-            // Card Info Panel
-            updateCardInfo();
-          }
-        }
-      };
-      initFromStorage();
-    }, [plugin]);
-
-    // Event listener for card updates
-    useEffect(() => {
-      const handleQueueLoadCard = async (event: any) => {
-    
-        updateCardInfo(event.cardId);
-      };
-  
-      plugin.event.addListener(AppEvents.QueueLoadCard, undefined, handleQueueLoadCard);
-      return () => {
-        plugin.event.removeListener(AppEvents.QueueLoadCard, undefined, handleQueueLoadCard);
-      };
-    }, [plugin]);
-
-    // Update focusedRem text
-    useEffect(() => {
-        const updateRemText = async () => {
-          if (focusedRem) {
-            const text = await getRemText(plugin, focusedRem);
-            setFocusedRemText(text);
-          } else {
-            setFocusedRemText("");
-          }
-        };
-        updateRemText();
-      }, [focusedRem]);
-    
-    const loadCurrentRemQueue = async () => {
-        setLoading(true);
-        const currentFocusedRem = await plugin.focus.getFocusedRem();
-
-        if (currentFocusedRem) {
-            const updateQueue = async () => {
-            setLoading(true);
-            const fetchedCards = await getCardsOfRem(plugin, currentFocusedRem);
-            const ids = fetchedCards.map((c) => c._id);
-            setCardIds(ids);
-            setCards(fetchedCards);
-            //
-            setCardsStr(await questionsFromCards(plugin, fetchedCards));
-            await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
-            await plugin.storage.setSynced("currentQueueCardIds", ids);
-
-            //await plugin.storage.setSynced("currentQueueCards", fetchedCards);
-
-            setLoading(false);
-            setFocusedRem(currentFocusedRem);
-            setIsTableExpanded(false);
-            };
-            updateQueue();
-        }
-    };
-
-    const loadCurrentRemQueueDue = async () => {
-      setLoading(true);
-      const currentFocusedRem = await plugin.focus.getFocusedRem();
-
-      if (currentFocusedRem) {
-          const updateQueue = async () => {
-          setLoading(true);
-          const fetchedCards = await getCardsOfRemDue(plugin, currentFocusedRem);
-          const ids = fetchedCards.map((c) => c._id);
-          setCardIds(ids);
-          setCards(fetchedCards);
-          //
-          setCardsStr(await questionsFromCards(plugin, fetchedCards));
-          await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
-          await plugin.storage.setSynced("currentQueueCardIds", ids);
-
-          setLoading(false);
-          setFocusedRem(currentFocusedRem);
-          setIsTableExpanded(false);
-          };
-          updateQueue();
-      }
-  };
-  
-    const updateCardInfo = async (cardId = undefined) => {
-      const id = cardId ?? await plugin.storage.getSynced<string>("currentQueueCardId");
-      if (id) {
-        setCurrentCardId(id);
-        const currentCard = await plugin.card.findOne(id);
-        const rem = await currentCard?.getRem();
-
-        //console.log("Current Card: " + await getRemText(plugin, rem));
-
-        //const cardInterval = await plugin.storage.getSynced<number>("currentQueueCardInterval") ?? 0;
-        const lastInterval = getLastInterval(currentCard?.repetitionHistory)
-
-        setCurrentCardLastInterval(lastInterval ? formatMilliseconds(lastInterval.workingInterval) : "");
-        setcurrentCardRepetitionTiming(lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() : 0);
-        setcurrentCardLastRating(getLastRatingStr(currentCard?.repetitionHistory));
-      }
-    };
-
-    async function onMouseClick() {
-      updateCardInfo();
-    }
-  
-    // Rest of your component (loadCurrentRemQueue, JSX, etc.) remains unchanged
-    const openQueueRem = async () => {
-      
-        if (focusedRem) {
-          await plugin.window.openRem(focusedRem);
-        }
-    };
-  
-    const openCurrentFlashcard = async () => {
-        const currentCard = cards.find((card) => card._id === currentCardId);
-        const rem = await currentCard?.getRem();
-        if (rem) {
-          await plugin.window.openRem(rem);
-        }
-    };
-  
-    const toggleTableExpansion = () => {
-      setIsTableExpanded(!isTableExpanded);
-      updateCardInfo();
-    };
-
-    const toogleCardList = () => {
-      setIsListExpanded(!isListExpanded);
-      //updateCardInfo();
-    };
-  
-    return (
-      <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <div style={{ paddingRight: "20px" }}>Current Queue: {focusedRemText || "No Rem selected"} <MyRemNoteButton text="" onClick={openQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" /></div> 
-          <div style={{ paddingRight: "20px" }}>Practice Flashcards from Rem: 
-            <MyRemNoteButton text="All" onClick={loadCurrentRemQueue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
-            <MyRemNoteButton text="Due" onClick={loadCurrentRemQueueDue} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
-          </div>
-        </div>
-        {loading ? (
-          <div>Loading flashcards...</div>
-        ) : cardIds.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", flex: "1", overflow: "auto" }}>
-            <div style={{ marginTop: "10px" }}>
-              <button onClick={toogleCardList} style={{ marginBottom: 10 }}>
-                {isListExpanded ? "- Card List:" : "+ Card List: "}
-              </button>
-              {isListExpanded && (
-                <div>
-                  {cardsStr.map((c) => (
-                    <div><MyRemNoteButton text={c} onClick={async () => {}}/></div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div style={{ marginTop: "10px" }}>
-              <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
-                {isTableExpanded ? "- Card Information: " : "+ Card Information: "}{currentCardText}
-              </button>
-              <MyRemNoteButton text="" onClick={openCurrentFlashcard} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
-              {isTableExpanded && (
-                <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 10 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Date</th>
-                      <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Interval</th>
-                      <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Rating</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                        {currentCardRepetitionTiming == 0
-                          ? ""
-                          : currentCardRepetitionTiming < 0
-                          ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")"
-                          : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}
-                      </td>
-                      <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastInterval}</td>
-                      <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastRating}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              )}
-            </div>
-            <div onClick={onMouseClick} style={{ cursor: "pointer" }}>
-              <Queue cardIds={cardIds} width={"100%"} maxWidth={"100%"} />
-            </div>
-          </div>
-        ) : (
-          <div>No cards to display. CardIds is empty: {JSON.stringify(cardIds)}</div>
-        )}
-      </div>
-    );
-}
-*/
-
 function CustomQueueWidget() {
     const plugin = usePlugin();
+
     const [focusedRem, setFocusedRem] = useState<Rem | undefined>(undefined);
+
     const [loading, setLoading] = useState<boolean>(false);
     const [cardIds, setCardIds] = useState<string[]>([]);
     const [cards, setCards] = useState<Card[]>([]);
@@ -1042,23 +843,27 @@ function CustomQueueWidget() {
     const [currentCardLastInterval, setCurrentCardLastInterval] = useState<string>("");
     const [currentCardLastPractice, setCurrentCardLastPractice] = useState<string>("");
     const [currentCardRepetitionTiming, setcurrentCardRepetitionTiming] = useState<number>(0);
-    const [currentCardLastRating, setcurrentCardLastRating] = useState<string>("");
+    const [currentCardLastRating, setcurrentCardLastRating] = useState<string[]>([]);
     const [isTableExpanded, setIsTableExpanded] = useState<boolean>(false);
     const [queueRemText, setQueueRemText] = useState<string>("");
-    const [selectedRemText, setSelectedRemText] = useState<string>("");
+    const [buildQueueRemText, setBuildQueueRemText] = useState<string>("");
     const [isListExpanded, setIsListExpanded] = useState<boolean>(false);
     // Updated state type to array of objects
     const [cardsData, setCardsData] = useState<{ id: string, text: string , nextDate: number}[]>([]);
     const [sortAscending, setSortAscending] = useState<boolean>(true);
 
     //
-    const [selectedOption, setSelectedOption] = useState('All');
+    const [isBuildQueueExpanded, setIsBuildQueueExpanded] = useState<boolean>(false);
+    const [searchOptions, setSearchOptions] = useState<SearchOptions>({ due: false, disabled: false, includePortals: false, bothDirections: false});
 
-    const currentRem = useTracker(async (reactPlugin) => {
+    const [isQueueExpanded, setIsQueueExpanded] = useState<boolean>(true);
+
+    const buildQueueRem = useTracker(async (reactPlugin) => {
             return await reactPlugin.focus.getFocusedRem();
         }
     );
 
+    // Init from storage
     useEffect(() => {
         const initFromStorage = async () => {
             const currentQueueRemId: string | undefined = await plugin.storage.getSynced("currentQueueRemId");
@@ -1078,6 +883,7 @@ function CustomQueueWidget() {
         initFromStorage();
     }, [plugin]);
 
+    // Event handlers
     useEffect(() => {
         const handleQueueLoadCard = async (event: any) => {
             updateCardInfo(event.cardId);
@@ -1103,23 +909,23 @@ function CustomQueueWidget() {
     }, [focusedRem]); // focusedRem
 
     useEffect(() => {
-      const updateSelectedRemText = async () => {
-        const txt = await getRemText(plugin, currentRem);
-        setSelectedRemText(txt == "" ? "No Rem Selected" : txt);
+      const updateBuildQueueRemText = async () => {
+        const txt = await getRemText(plugin, buildQueueRem);
+        setBuildQueueRemText(txt == "" ? "No Rem Selected" : txt);
       };
-      updateSelectedRemText();
-    }, [currentRem]); // focusedRem
+      updateBuildQueueRemText();
+    }, [buildQueueRem]);
 
-    const loadRemQueue = async (setting: string) => {
+    const loadRemQueue = async () => {
       //console.log(await getRemText(plugin, focusedRem));
 
       setCardIds([]);
       setCards([]);
       setCardsData([]);
-      setFocusedRem(undefined);
+      //setFocusedRem(undefined);
       setIsTableExpanded(false);
       //setLoading(true);
-      const currentFocusedRem = currentRem; // focusedRem; //await plugin.focus.getFocusedRem();
+      const currentFocusedRem = buildQueueRem; // focusedRem; //await plugin.focus.getFocusedRem();
       if (currentFocusedRem) {
           const updateQueue = async () => {
               setLoading(true);
@@ -1127,99 +933,27 @@ function CustomQueueWidget() {
               setQueueRemText(text);
 
               //const fetchedCards = await getCardsOfRemDown(plugin, currentFocusedRem);
-              let fetchedCards: Card[] = [];
-              if(setting == "SETTING_DOWN")
-                fetchedCards = await getCardsOfRemDown(plugin, currentFocusedRem);
-
-              if(setting == "SETTING_UP")
-                fetchedCards = await getCardsOfRemUp(plugin, currentFocusedRem);
-
-              const ids = fetchedCards.map((c) => c._id);
-              setCardIds(ids);
-              setCards(fetchedCards);
-              setCardsData(await questionsFromCards(plugin, fetchedCards));
-              await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
-              await plugin.storage.setSynced("currentQueueCardIds", ids);
-              setLoading(false);
-              setFocusedRem(currentFocusedRem);
-              setIsTableExpanded(false);
-          };
-          updateQueue();
-      }
-    };
-
-    const loadRemQueueDue = async (setting: string) => {
-        setCardIds([]);
-        setCards([]);
-        setCardsData([]);
-        setFocusedRem(undefined);
-        setIsTableExpanded(false);
-        //setLoading(true);
-        const currentFocusedRem = currentRem; //focusedRem; //await plugin.focus.getFocusedRem();
-        if (currentFocusedRem) {
-            const updateQueue = async () => {
-                setLoading(true);
-                const text = await getRemText(plugin, currentFocusedRem);
-                setQueueRemText(text);
-                //const fetchedCards = await getCardsOfRemDownDue(plugin, currentFocusedRem);
+              if(!searchOptions.disabled) {
                 let fetchedCards: Card[] = [];
-                if(setting == "SETTING_DOWN")
-                  fetchedCards = await getCardsOfRemDownDue(plugin, currentFocusedRem);
 
-                if(setting == "SETTING_UP")
-                  fetchedCards = await getCardsOfRemUpDue(plugin, currentFocusedRem);
+                fetchedCards = await getCardsOfRem(plugin, currentFocusedRem, searchOptions) as Card[];
 
                 const ids = fetchedCards.map((c) => c._id);
                 setCardIds(ids);
                 setCards(fetchedCards);
                 setCardsData(await questionsFromCards(plugin, fetchedCards));
-                await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
+
                 await plugin.storage.setSynced("currentQueueCardIds", ids);
-                setLoading(false);
-                setFocusedRem(currentFocusedRem);
-                setIsTableExpanded(false);
-            };
-            updateQueue();
-        }
-    };
-
-    const loadRemQueueDisabled = async (setting: string) => {
-      setCardIds([]);
-      setCards([]);
-      setCardsData([]);
-      setFocusedRem(undefined);
-      setIsTableExpanded(false);
-
-      const currentFocusedRem = currentRem;
-
-      if(currentFocusedRem) {
-        const updateCardsList = async () => {
-          setLoading(true);
-          const text = await getRemText(plugin, currentFocusedRem);
-          setQueueRemText(text);
-          ////
-          if(setting == "SETTING_DOWN")
-            setCardsData(await getCardsOfRemDownDisabled(plugin, currentFocusedRem));
-
-          if(setting == "SETTING_UP")
-            setCardsData(await getCardsOfRemUpDisabled(plugin, currentFocusedRem));
-
-          setLoading(false);
-          setFocusedRem(currentFocusedRem);
-          setIsTableExpanded(false);
-        };
-
-        updateCardsList();
-      }
-    };
-
-    const handleSearchDown = (setting: string) => {
-      if (selectedOption === 'All') {
-        loadRemQueue(setting);
-      } else if (selectedOption === 'Due') {
-        loadRemQueueDue(setting);
-      } else if (selectedOption === 'Disabled') {
-        loadRemQueueDisabled(setting);
+              } else {
+                setCardsData(await getDisabledRem(plugin, currentFocusedRem, searchOptions) as DisabledRemInfo[])
+              }
+              await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
+              setLoading(false);
+              setFocusedRem(currentFocusedRem);
+              setIsTableExpanded(false);
+              setIsBuildQueueExpanded(false);
+          };
+        updateQueue();
       }
     };
 
@@ -1233,7 +967,7 @@ function CustomQueueWidget() {
             setCurrentCardLastInterval(lastInterval ? formatMilliseconds(lastInterval.workingInterval) : "");
             setCurrentCardLastPractice(lastInterval ? (formatMilliseconds(lastInterval.intervalSetOn - Date.now(), true) + " ago") : "");
             setcurrentCardRepetitionTiming(lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() : 0);
-            setcurrentCardLastRating(getLastRatingStr(currentCard?.repetitionHistory));
+            setcurrentCardLastRating(getLastRatingStr(currentCard?.repetitionHistory, 5));
         }
     };
 
@@ -1262,6 +996,11 @@ function CustomQueueWidget() {
         await plugin.window.openRem(rem);
     };
 
+    const toogleBuildQueue = () => {
+      setIsBuildQueueExpanded(!isBuildQueueExpanded);
+      updateCardInfo();
+    };
+
     const toggleTableExpansion = () => {
         setIsTableExpanded(!isTableExpanded);
         updateCardInfo();
@@ -1271,210 +1010,135 @@ function CustomQueueWidget() {
         setIsListExpanded(!isListExpanded);
     };
 
+    const toogleQueueExpansion = () => {
+      setIsQueueExpanded(!isQueueExpanded);
+    };
+
+    const scoreToImage = new Map<string, string>([
+      ["Skip", "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzNiAzNiI+PHBhdGggZmlsbD0iI0ZGQ0M0RCIgZD0iTTIwIDYuMDQyYzAgMS4xMTItLjkwMyAyLjAxNC0yIDIuMDE0cy0yLS45MDItMi0yLjAxNFYyLjAxNEMxNiAuOTAxIDE2LjkwMyAwIDE4IDBzMiAuOTAxIDIgMi4wMTR2NC4wMjh6Ii8+PHBhdGggZmlsbD0iI0ZGQUMzMyIgZD0iTTkuMTggMzZjLS4yMjQgMC0uNDUyLS4wNTItLjY2Ni0uMTU5YTEuNTIxIDEuNTIxIDAgMCAxLS42NjctMi4wMjdsOC45NC0xOC4xMjdjLjI1Mi0uNTEyLjc2OC0uODM1IDEuMzMzLS44MzVzMS4wODEuMzIzIDEuMzMzLjgzNWw4Ljk0MSAxOC4xMjdhMS41MiAxLjUyIDAgMCAxLS42NjYgMi4wMjcgMS40ODIgMS40ODIgMCAwIDEtMS45OTktLjY3NkwxOC4xMjEgMTkuNzRsLTcuNjA3IDE1LjQyNUExLjQ5IDEuNDkgMCAwIDEgOS4xOCAzNnoiLz48cGF0aCBmaWxsPSIjNTg1OTVCIiBkPSJNMTguMTIxIDIwLjM5MmEuOTg1Ljk4NSAwIDAgMS0uNzAyLS4yOTVMMy41MTIgNS45OThjLS4zODgtLjM5NC0uMzg4LTEuMDMxIDAtMS40MjRzMS4wMTctLjM5MyAxLjQwNCAwTDE4LjEyMSAxNy45NiAzMS4zMjQgNC41NzNhLjk4NS45ODUgMCAwIDEgMS40MDUgMCAxLjAxNyAxLjAxNyAwIDAgMSAwIDEuNDI0bC0xMy45MDUgMTQuMWEuOTkyLjk5MiAwIDAgMS0uNzAzLjI5NXoiLz48cGF0aCBmaWxsPSIjREQyRTQ0IiBkPSJNMzQuMDE1IDE5LjM4NWMwIDguODk4LTcuMTE1IDE2LjExMS0xNS44OTQgMTYuMTExLTguNzc3IDAtMTUuODkzLTcuMjEzLTE1Ljg5My0xNi4xMTEgMC04LjkgNy4xMTYtMTYuMTEzIDE1Ljg5My0xNi4xMTMgOC43NzgtLjAwMSAxNS44OTQgNy4yMTMgMTUuODk0IDE2LjExM3oiLz48cGF0aCBmaWxsPSIjRTZFN0U4IiBkPSJNMzAuMDQxIDE5LjM4NWMwIDYuNjc0LTUuMzM1IDEyLjA4NC0xMS45MiAxMi4wODQtNi41ODMgMC0xMS45MTktNS40MS0xMS45MTktMTIuMDg0QzYuMjAyIDEyLjcxIDExLjUzOCA3LjMgMTguMTIxIDcuM2M2LjU4NS0uMDAxIDExLjkyIDUuNDEgMTEuOTIgMTIuMDg1eiIvPjxwYXRoIGZpbGw9IiNGRkNDNEQiIGQ9Ik0zMC4wNCAxLjI1N2E1Ljg5OSA1Ljg5OSAwIDAgMC00LjIxNCAxLjc3bDguNDI5IDguNTQ0QTYuMDY0IDYuMDY0IDAgMCAwIDM2IDcuMjk5YzAtMy4zMzYtMi42NjktNi4wNDItNS45Ni02LjA0MnptLTI0LjA4IDBhNS45IDUuOSAwIDAgMSA0LjIxNCAxLjc3bC04LjQyOSA4LjU0NEE2LjA2NCA2LjA2NCAwIDAgMSAwIDcuMjk5YzAtMy4zMzYgMi42NjgtNi4wNDIgNS45Ni02LjA0MnoiLz48cGF0aCBmaWxsPSIjNDE0MDQyIiBkPSJNMjMgMjBoLTVhMSAxIDAgMCAxLTEtMXYtOWExIDEgMCAwIDEgMiAwdjhoNGExIDEgMCAxIDEgMCAyeiIvPjwvc3ZnPg=="],
+      ["Forgot", "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzNiAzNiI+PHBhdGggZmlsbD0iI0REMkU0NCIgZD0iTTIxLjUzMyAxOC4wMDIgMzMuNzY4IDUuNzY4YTIuNSAyLjUgMCAwIDAtMy41MzUtMy41MzVMMTcuOTk4IDE0LjQ2NyA1Ljc2NCAyLjIzM2EyLjQ5OCAyLjQ5OCAwIDAgMC0zLjUzNSAwIDIuNDk4IDIuNDk4IDAgMCAwIDAgMy41MzVsMTIuMjM0IDEyLjIzNEwyLjIwMSAzMC4yNjVhMi40OTggMi40OTggMCAwIDAgMS43NjggNC4yNjdjLjY0IDAgMS4yOC0uMjQ0IDEuNzY4LS43MzJsMTIuMjYyLTEyLjI2MyAxMi4yMzQgMTIuMjM0YTIuNDkzIDIuNDkzIDAgMCAwIDEuNzY4LjczMiAyLjUgMi41IDAgMCAwIDEuNzY4LTQuMjY3TDIxLjUzMyAxOC4wMDJ6Ii8+PC9zdmc+"],
+      ["Partially recalled", "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzNiAzNiI+PHBhdGggZmlsbD0iI0ZGQ0M0RCIgZD0iTTM2IDE4YzAgOS45NDEtOC4wNTkgMTgtMTggMTgtOS45NCAwLTE4LTguMDU5LTE4LTE4QzAgOC4wNiA4LjA2IDAgMTggMGM5Ljk0MSAwIDE4IDguMDYgMTggMTgiLz48ZWxsaXBzZSBmaWxsPSIjNjY0NTAwIiBjeD0iMTIiIGN5PSIxMy41IiByeD0iMi41IiByeT0iMy41Ii8+PGVsbGlwc2UgZmlsbD0iIzY2NDUwMCIgY3g9IjI0IiBjeT0iMTMuNSIgcng9IjIuNSIgcnk9IjMuNSIvPjxwYXRoIGZpbGw9IiNGRkYiIGQ9Ik0yNSAyMWE0IDQgMCAwIDEgMCA4SDExYTQgNCAwIDAgMSAwLThoMTR6Ii8+PHBhdGggZmlsbD0iIzY2NDUwMCIgZD0iTTI1IDIwSDExYy0yLjc1NyAwLTUgMi4yNDMtNSA1czIuMjQzIDUgNSA1aDE0YzIuNzU3IDAgNS0yLjI0MyA1LTVzLTIuMjQzLTUtNS01em0wIDJhMi45OTcgMi45OTcgMCAwIDEgMi45NDkgMi41SDI0LjVWMjJoLjV6bS0xLjUgMHYyLjVoLTNWMjJoM3ptLTQgMHYyLjVoLTNWMjJoM3ptLTQgMHYyLjVoLTNWMjJoM3pNMTEgMjJoLjV2Mi41SDguMDUxQTIuOTk3IDIuOTk3IDAgMCAxIDExIDIyem0wIDZhMi45OTcgMi45OTcgMCAwIDEtMi45NDktMi41SDExLjVWMjhIMTF6bTEuNSAwdi0yLjVoM1YyOGgtM3ptNCAwdi0yLjVoM1YyOGgtM3ptNCAwdi0yLjVoM1YyOGgtM3ptNC41IDBoLS41di0yLjVoMy40NDlBMi45OTcgMi45OTcgMCAwIDEgMjUgMjh6Ii8+PC9zdmc+"],
+      ["Recalled with effort", "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzNiAzNiI+PHBhdGggZmlsbD0iI0ZGQ0M0RCIgZD0iTTM2IDE4YzAgOS45NDEtOC4wNTkgMTgtMTggMTgtOS45NCAwLTE4LTguMDU5LTE4LTE4QzAgOC4wNiA4LjA2IDAgMTggMGM5Ljk0MSAwIDE4IDguMDYgMTggMTgiLz48cGF0aCBmaWxsPSIjNjY0NTAwIiBkPSJNMjguNDU3IDE3Ljc5N2MtLjA2LS4xMzUtMS40OTktMy4yOTctNC40NTctMy4yOTctMi45NTcgMC00LjM5NyAzLjE2Mi00LjQ1NyAzLjI5N2EuNTAzLjUwMyAwIDAgMCAuNzU1LjYwNWMuMDEyLS4wMDkgMS4yNjItLjkwMiAzLjcwMi0uOTAyIDIuNDI2IDAgMy42NzQuODgxIDMuNzAyLjkwMWEuNDk4LjQ5OCAwIDAgMCAuNzU1LS42MDR6bS0xMiAwYy0uMDYtLjEzNS0xLjQ5OS0zLjI5Ny00LjQ1Ny0zLjI5Ny0yLjk1NyAwLTQuMzk3IDMuMTYyLTQuNDU3IDMuMjk3YS40OTkuNDk5IDAgMCAwIC43NTQuNjA1QzguMzEgMTguMzkzIDkuNTU5IDE3LjUgMTIgMTcuNWMyLjQyNiAwIDMuNjc0Ljg4MSAzLjcwMi45MDFhLjQ5OC40OTggMCAwIDAgLjc1NS0uNjA0ek0xOCAyMmMtMy42MjMgMC02LjAyNy0uNDIyLTktMS0uNjc5LS4xMzEtMiAwLTIgMiAwIDQgNC41OTUgOSAxMSA5IDYuNDA0IDAgMTEtNSAxMS05IDAtMi0xLjMyMS0yLjEzMi0yLTItMi45NzMuNTc4LTUuMzc3IDEtOSAxeiIvPjxwYXRoIGZpbGw9IiNGRkYiIGQ9Ik05IDIzczMgMSA5IDEgOS0xIDktMS0yIDQtOSA0LTktNC05LTR6Ii8+PC9zdmc+"],
+      ["Easily recalled", "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzNiAzNiI+PHBhdGggZmlsbD0iI0Y0OTAwQyIgZD0iTTE0LjE3NCAxNy4wNzUgNi43NSA3LjU5NGwtMy43MjIgOS40ODF6Ii8+PHBhdGggZmlsbD0iI0Y0OTAwQyIgZD0ibTE3LjkzOCA1LjUzNC02LjU2MyAxMi4zODlIMjQuNXoiLz48cGF0aCBmaWxsPSIjRjQ5MDBDIiBkPSJtMjEuODI2IDE3LjA3NSA3LjQyNC05LjQ4MSAzLjcyMiA5LjQ4MXoiLz48cGF0aCBmaWxsPSIjRkZDQzREIiBkPSJNMjguNjY5IDE1LjE5IDIzLjg4NyAzLjUyM2wtNS44OCAxMS42NjgtLjAwNy4wMDMtLjAwNy0uMDA0LTUuODgtMTEuNjY4TDcuMzMxIDE1LjE5QzQuMTk3IDEwLjgzMyAxLjI4IDguMDQyIDEuMjggOC4wNDJTMyAyMC43NSAzIDMzaDMwYzAtMTIuMjUgMS43Mi0yNC45NTggMS43Mi0yNC45NThzLTIuOTE3IDIuNzkxLTYuMDUxIDcuMTQ4eiIvPjxjaXJjbGUgZmlsbD0iIzVDOTEzQiIgY3g9IjE3Ljk1NyIgY3k9IjIyIiByPSIzLjY4OCIvPjxjaXJjbGUgZmlsbD0iIzk4MUNFQiIgY3g9IjI2LjQ2MyIgY3k9IjIyIiByPSIyLjQxMiIvPjxjaXJjbGUgZmlsbD0iI0REMkU0NCIgY3g9IjMyLjg1MiIgY3k9IjIyIiByPSIxLjk4NiIvPjxjaXJjbGUgZmlsbD0iIzk4MUNFQiIgY3g9IjkuNDUiIGN5PSIyMiIgcj0iMi40MTIiLz48Y2lyY2xlIGZpbGw9IiNERDJFNDQiIGN4PSIzLjA2MSIgY3k9IjIyIiByPSIxLjk4NiIvPjxwYXRoIGZpbGw9IiNGRkFDMzMiIGQ9Ik0zMyAzNEgzYTEgMSAwIDEgMSAwLTJoMzBhMSAxIDAgMSAxIDAgMnptMC0zLjQ4NkgzYTEgMSAwIDEgMSAwLTJoMzBhMSAxIDAgMSAxIDAgMnoiLz48Y2lyY2xlIGZpbGw9IiNGRkNDNEQiIGN4PSIxLjQ0NyIgY3k9IjguMDQyIiByPSIxLjQwNyIvPjxjaXJjbGUgZmlsbD0iI0Y0OTAwQyIgY3g9IjYuNzUiIGN5PSI3LjU5NCIgcj0iMS4xOTIiLz48Y2lyY2xlIGZpbGw9IiNGRkNDNEQiIGN4PSIxMi4xMTMiIGN5PSIzLjUyMyIgcj0iMS43ODQiLz48Y2lyY2xlIGZpbGw9IiNGRkNDNEQiIGN4PSIzNC41NTMiIGN5PSI4LjA0MiIgcj0iMS40MDciLz48Y2lyY2xlIGZpbGw9IiNGNDkwMEMiIGN4PSIyOS4yNSIgY3k9IjcuNTk0IiByPSIxLjE5MiIvPjxjaXJjbGUgZmlsbD0iI0ZGQ0M0RCIgY3g9IjIzLjg4NyIgY3k9IjMuNTIzIiByPSIxLjc4NCIvPjxjaXJjbGUgZmlsbD0iI0Y0OTAwQyIgY3g9IjE3LjkzOCIgY3k9IjUuNTM0IiByPSIxLjc4NCIvPjwvc3ZnPg=="]
+    ]);
+
     return (
-  <div
-    style={{
-      height: "100%",
-      width: "100%",
-      display: "flex",
-      flexDirection: "column",
-      padding: 10,
-      overflowY: "auto", // Add this to make the outer div scrollable
-    }}
-  >
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: 8,
-      }}
-    >
-      <div style={{
-        width: "100%",
-            maxHeight: "600px",
-            overflowY: "scroll",
-            padding: "10px",
-            border: "1px solid #ddd",
-            marginRight: "20px",
-          }}>
-        <div>Practice Flashcards from {selectedRemText}</div>
-        <div style={{ display: "flex", alignItems: "center" }}>
-          <select
-            value={selectedOption}
-            onChange={(e) => setSelectedOption(e.target.value)}
-          >
-            <option value="All">All</option>
-            <option value="Due">Due</option>
-            <option value="Disabled">Disabled</option>
-          </select>
-          <MyRemNoteButton
-            text="Practice Descendants"
-            onClick={async () => {handleSearchDown("SETTING_DOWN")}}
-            img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
-          />
-          <MyRemNoteButton
-            text="Practice All"
-            onClick={async () => {handleSearchDown("SETTING_UP")}}
-            img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5"
-          />
-        </div>
-      </div>
-    </div>
-    {loading ? (
-      <div>Loading flashcards...</div>
-    ) : cardsData.length > 0 ? (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          // Removed flex: "1" and overflowY: "scroll" so it takes natural height
-        }}
-      >
-        <div style={{ marginTop: "10px", marginRight: "20px" }}>
-          <div style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginBottom: 8,
-      }}>
-            <MyRemNoteButton
-              text={queueRemText ? "Current Queue: " + queueRemText : "No Rem selected"}
-              onClick={openQueueRem}
-              img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z"
-            />
-            <button onClick={toogleCardList} style={{ marginBottom: 10 }}>
-              {(isListExpanded ? "Collapse Cards" : "Expand Cards") +
-                "(" +
-                cardsData.length +
-                "): "}
-            </button>
+      <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: 10, overflowY: "auto" }} >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, }}>
+          <div style={{ width: "100%", maxHeight: "600px", padding: "10px", border: "1px solid #ddd", marginRight: "20px" }}>
+            <button style={{ width: "100%" }} onClick={toogleBuildQueue}>{isBuildQueueExpanded ? "- Build Queue" : "+ Build Queue"}</button>
+            {isBuildQueueExpanded && (
+              <div style={{ marginTop: "10px" }}>
+                <div>Rem: {buildQueueRemText}</div>
+                <label style={{ display: "block" }}><input type="radio" name="option_direction" value="All Connected" checked={searchOptions?.bothDirections === true} onChange={(e) => setSearchOptions({ ...searchOptions, bothDirections: true })} /> All Connected</label>
+                <label style={{ display: "block" }}><input type="radio" name="option_direction" value="Descendants" checked={searchOptions?.bothDirections === false} onChange={(e) => setSearchOptions({ ...searchOptions, bothDirections: false })} /> Descendants</label>
+                <label style={{ display: "block" }}><input type="checkbox" checked={searchOptions?.due} onChange={(e) => setSearchOptions({ ...searchOptions, due: !searchOptions.due })} /> Due</label>
+                <label style={{ display: "block" }}><input type="checkbox" checked={searchOptions?.disabled} onChange={(e) => setSearchOptions({ ...searchOptions, disabled: !searchOptions.disabled })} /> Disabled</label>
+                <label style={{ display: "block" }}><input type="checkbox" checked={searchOptions?.includePortals} onChange={(e) => setSearchOptions({ ...searchOptions, includePortals: !searchOptions.includePortals })} /> Portals</label>
+                <MyRemNoteButton text="Build Queue" onClick={async () => {await loadRemQueue()}} img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" />
+              </div>
+            )}
           </div>
-          {isListExpanded && (
-            <div style={{ maxHeight: "500px", overflowY: "auto" }}>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                marginBottom: 10,
-              }}
-            >
-              <thead>
-                <tr>
-                  <th
-                    style={{
-                      border: "1px solid #ddd",
-                      padding: 8,
-                      textAlign: "left",
-                    }}
-                  >
-                    Question
-                  </th>
-                  <th
-                    style={{
-                      border: "1px solid #ddd",
-                      padding: 8,
-                      textAlign: "left",
-                    }}
-                  >
-                    <MyRemNoteButton text={"Next Date"} onClick={() => {setSortAscending(!sortAscending); setIsListExpanded(false);}}/>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...cardsData].sort((a, b) => (sortAscending ? a.nextDate - b.nextDate : b.nextDate - a.nextDate)).map((c) => (
-                  <tr key={c.id}>
-                    <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                      <MyRemNoteButton
-                        text={c.text}
-                        onClick={async () => {
-                          openRem(plugin, c.id);
-                        }}
-                      />
-                    </td>
-                    <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                      {formatMilliseconds(c.nextDate - Date.now())}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        </div>
+        {loading ? (
+          <div>Loading flashcards...</div>
+        ) : cardsData.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, }}>
+              <div style={{ width: "100%", maxHeight: "600px", overflowY: "scroll", padding: "10px", border: "1px solid #ddd", marginRight: "20px" }}>
+                <button style={{ width: "100%" }} onClick={toogleCardList}>{isListExpanded ? "- Current Queue" : "+ Current Queue"} ({cardsData.length})</button>
+                {isListExpanded && (
+                  <div style={{ marginTop: "10px" }}>
+                    <MyRemNoteButton text={queueRemText ? queueRemText : "No Rem selected"} onClick={openQueueRem} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
+                    <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "10px" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Question</th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}><MyRemNoteButton text="Next Date" onClick={() => { setSortAscending(!sortAscending); setIsListExpanded(false); }} /></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...cardsData].sort((a, b) => (sortAscending ? a.nextDate - b.nextDate : b.nextDate - a.nextDate)).map((c) => (
+                          <tr key={c.id}>
+                            <td style={{ border: "1px solid #ddd", padding: 8 }}><MyRemNoteButton text={c.text} onClick={async () => { openRem(plugin, c.id); }} /></td>
+                            <td style={{ border: "1px solid #ddd", padding: 8 }}>{formatMilliseconds(c.nextDate - Date.now())}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
-          )}
-        </div>
-        <div style={{ marginTop: "10px", marginRight: "20px" }}>
-          <button onClick={toggleTableExpansion} style={{ marginBottom: 10 }}>
-            {isTableExpanded ? "- Card Information: " : "+ Card Information: "}
-            {currentCardText}
-          </button>
-          <MyRemNoteButton
-            text=""
-            onClick={openCurrentFlashcard}
-            img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z"
-          />
-          {isTableExpanded && (
-            <table
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, }}>
+              <div style={{ width: "100%", maxHeight: "600px", padding: "10px", border: "1px solid #ddd", marginRight: "20px" }}>
+                <button style={{ width: "100%" }} onClick={toggleTableExpansion}>{isTableExpanded ? "- Card Information" : "+ Card Information"}: {currentCardText}</button>
+                {isTableExpanded && (
+                  <div style={{ marginTop: "10px" }}>
+                    <MyRemNoteButton text="Open" onClick={openCurrentFlashcard} img="M9 7V2.221a2 2 0 0 0-.5.365L4.586 6.5a2 2 0 0 0-.365.5H9Zm2 0V2h7a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5h7.586l-.293.293a1 1 0 0 0 1.414 1.414l2-2a1 1 0 0 0 0-1.414l-2-2a1 1 0 0 0-1.414 1.414l.293.293H4V9h5a2 2 0 0 0 2-2Z" />
+                    <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "10px" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Due</th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Interval</th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Rating</th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Last Practice</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardRepetitionTiming == 0 ? "" : currentCardRepetitionTiming < 0 ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")" : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}</td>
+                          <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastInterval}</td>
+                          <td style={{ border: "1px solid #ddd", padding: 8, textAlign: "center" }}>
+                            {currentCardLastRating.length > 0 ? (
+                              currentCardLastRating.slice().reverse().map((rating, index) => (
+                                <img
+                                  key={index}
+                                  style={{
+                                    width: '20px',
+                                    height: '20px',
+                                    marginRight: index < currentCardLastRating.length - 1 ? '5px' : '0'
+                                  }}
+                                  src={scoreToImage.get(rating)}
+                                />
+                              ))
+                            ) : (
+                              <div></div>
+                            )}
+                          </td>
+                          <td style={{ border: "1px solid #ddd", padding: 8 }}>{currentCardLastPractice}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div
+              onClick={onMouseClick}
               style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                marginBottom: 10,
+                height: "700px",
+                overflowY: "scroll",
+                padding: "10px",
+                border: "1px solid #ddd",
+                marginRight: "20px",
               }}
             >
-              <thead>
-                <tr>
-                  <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", }}> Due </th>
-                  <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", }}> Interval </th>
-                  <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", }}> Last Rating </th>
-                  <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left", }}> Last Practice </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                    {currentCardRepetitionTiming == 0
-                      ? ""
-                      : currentCardRepetitionTiming < 0
-                      ? "Late (" + formatMilliseconds(currentCardRepetitionTiming) + ")"
-                      : "Early (" + formatMilliseconds(currentCardRepetitionTiming) + ")"}
-                  </td>
-                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                    {currentCardLastInterval}
-                  </td>
-                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                    {currentCardLastRating}
-                  </td>
-                  <td style={{ border: "1px solid #ddd", padding: 8 }}>
-                    {currentCardLastPractice}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          )}
-        </div>
-        <div
-          onClick={onMouseClick}
-          style={{
-            height: "600px",
-            overflowY: "scroll",
-            padding: "10px",
-            border: "1px solid #ddd",
-            marginRight: "20px",
-          }}
-        >
-          <Queue
-            cardIds={cardIds}
-            width={"100%"}
-            maxWidth={"100%"}
-            height={"100%"}
-            maxHeight={"100%"}
-          />
-        </div>
+              <Queue
+                cardIds={cardIds}
+                width={"100%"}
+                maxWidth={"100%"}
+                height={"100%"}
+                maxHeight={"100%"}
+              />
+            </div>
+          </div>
+        ) : (
+        <div>No cards to display. cardsData is empty: {JSON.stringify(cardsData)}</div>
+        )}
       </div>
-    ) : (
-      <div>No cards to display. cardsData is empty: {JSON.stringify(cardsData)}</div>
-    )}
-  </div>
 );
+
 }
 
 renderWidget(CustomQueueWidget);
