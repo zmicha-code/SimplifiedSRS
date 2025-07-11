@@ -1,4 +1,4 @@
-import { PowerupSlotCodeMap, usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn, AppEvents, BuiltInPowerupCodes, useTracker
+import { PowerupSlotCodeMap, usePlugin, renderWidget, Queue, Rem, Card, RNPlugin, RemType, RichTextInterface, RepetitionStatus, QueueInteractionScore, EventCallbackFn, AppEvents, BuiltInPowerupCodes, useTracker, CardData
 } from '@remnote/plugin-sdk';
 import { useEffect, useState } from 'react';
 //import { getLastInterval, getWrongInRow, formatMilliseconds } from ''
@@ -482,6 +482,9 @@ interface SearchOptions {
   includeDescendants: boolean,
   dueOnly: boolean,
   disabledOnly: boolean,
+  referencedOnly: boolean,
+  ratingOnly: boolean,
+  ratingFilter: QueueInteractionScore, // 0 Skip, 1 Forgot, ..., 4 Easily Recalled
   includePortals: boolean,
   //invertedDirection: boolean, // Inverted mean up. Instead of collecting flashcards from descendants
   includeReferencedCard: boolean,
@@ -491,74 +494,220 @@ interface SearchOptions {
 }
 
 // Helper function assumed to be defined elsewhere
-function isDue(card: Card): boolean {
-  const lastInterval = getLastInterval(card?.repetitionHistory);
+//function isDue(card: Card): boolean {
+function isDue(card: SearchData): boolean {
+  const lastInterval = getLastInterval(card.card.repetitionHistory);
   return lastInterval ? lastInterval.intervalSetOn + lastInterval.workingInterval - Date.now() < 0 : true;
 }
 
-async function getCardsOfRem(plugin: RNPlugin, rem: Rem, searchOptions: SearchOptions, processed = new Set<string>(), addedCardIds = new Set<string>()): Promise<Card[]> {
-  if (processed.has(rem._id)) return [];
-  processed.add(rem._id);
+async function isDisabled(plugin: RNPlugin, card: SearchData) {
+  return await hasTag(plugin, card.rem, "DISABLED");
+}
 
-  let cards: Card[] = [];
-
-  let childrenRem = await getCleanChildren(plugin, rem);
-
-  // OPTION: Add cards from the current rem, filtered by due if specified
+async function addCards(plugin: RNPlugin,
+                        rem: Rem,
+                        cards: SearchData[],
+                        searchOptions: SearchOptions,
+                        addedCardIds: Set<string>,
+                        //isRef: boolean,
+                        cardPath:string) {
   const remCards = rem.getCards ? await rem.getCards() : [];
-  let flashcard = false;
+
   for (const card of remCards) {
     if (!addedCardIds.has(card._id)) {
       addedCardIds.add(card._id);
+
+      //console.log("Adding " + await getRemText(plugin, rem) + " (" + cardPath + ")");
+
+      //if (!searchOptions.dueOnly || isDue(card)) {
+
+        //if(!searchOptions.referencedOnly || isRef) {
+          cards.push({rem: rem, card: card});
+        //}
+      //}
+    } //else {
+      // CORRECT?: If the card was added through Reference but is also included in the normal Hierarchy (not through ref) delete it if referencedOnly = true
+      //if (searchOptions.referencedOnly && !isRef) {
+      //  const index = cards.findIndex(c => c._id === card._id);
+      //  if (index !== -1) {
+      //    cards.splice(index, 1);
+      //  }
+      //  }
+    //}
+  }
+}
+
+/*
+async function addCards(plugin: RNPlugin,
+                        rem: Rem,
+                        cards: Card[],
+                        searchOptions: SearchOptions,
+                        addedCardIds: Set<string>,
+                        //isRef: boolean,
+                        cardPath:string) {
+  const remCards = rem.getCards ? await rem.getCards() : [];
+
+  for (const card of remCards) {
+    if (!addedCardIds.has(card._id)) {
+      addedCardIds.add(card._id);
+
+      console.log("Adding " + await getRemText(plugin, rem) + " (" + cardPath + ")");
+
       if (!searchOptions.dueOnly || isDue(card)) {
-        cards.push(card);
-      }
-    }
-    flashcard = true;
-  }
 
-  // A Rem or Flashcard is Referenced in the Question
-  // TODO: differentiate between rem and card
-  if(flashcard && (searchOptions.includeReferencedRem || searchOptions.includeReferencedCard)) {
+        //if(!searchOptions.referencedOnly || isRef) {
+          cards.push(card);
+        //}
+      }
+    } //else {
+      // CORRECT?: If the card was added through Reference but is also included in the normal Hierarchy (not through ref) delete it if referencedOnly = true
+      //if (searchOptions.referencedOnly && !isRef) {
+      //  const index = cards.findIndex(c => c._id === card._id);
+      //  if (index !== -1) {
+      //    cards.splice(index, 1);
+      //  }
+      //  }
+    //}
+  }
+}
+  */
+
+interface SearchData {
+  rem: Rem,
+  card: Card
+}
+async function getCardsOfRem( plugin: RNPlugin,
+                              rem: Rem,
+                              searchOptions: SearchOptions,
+                              processed = new Set<string>(),
+                              addedCardIds = new Set<string>(),
+                              cardPath: string = ""): Promise<SearchData[]> {
+  // A Rem might appear as [[Rem]] in an answer (searchOptions.includeDescendants = false) and then later regulary (includeDescendants = true). 
+  // Checking this would then prevent the full recursion because the Rem was already visited with lesser search depth
+  if (processed.has(rem._id)) return [];
+
+  if(searchOptions.includeDescendants)
+    processed.add(rem._id);
+
+  //console.log("GetCardsOfRem: " + await getRemText(plugin, rem));
+
+  let cards: SearchData[] = [];
+
+  let childrenRem = await getCleanChildrenAll(plugin, rem);
+
+  const flashcard = await isFlashcard(plugin, rem);
+  // FLASHCARD: Add cards from this rem, filtered by due if specified
+  if(flashcard) {
+    await addCards(plugin, rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
+  }
+  
+  // FLASHCARD:
+  if(flashcard) {
+    // FLASHCARD: Handle References that appear in this QUESTION
     const questionRefs = await rem.remsBeingReferenced();
-
     for(const r of questionRefs) {
-      cards = cards.concat(await getCardsOfRem(plugin, r, {...searchOptions, includeAncestors: false, includeDescendants: true}, processed, addedCardIds));
-    }
 
-    for(const c of childrenRem) {
-      const answerRefs = await c.remsBeingReferenced()
-      const refs = [...answerRefs];
-      if(refs.length > 0) {
-          // OPTION: Include Flashcards that are referenced in this Flashcards answer
-        if(searchOptions.includeReferencedCard) {
-
-          //if (refs.length > 0 && (await child.isCardItem() || await child.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail))) {
-            const ref = refs[0];
-            const refCards = await ref.getCards();
-            for (const card of refCards) {
-              if (!addedCardIds.has(card._id)) {
-                addedCardIds.add(card._id);
-                if (!searchOptions.dueOnly || isDue(card)) {
-                  cards.push(card);
-                }
-              }
-            }
-          //}
+      // References to Flashcard in Question
+      if(searchOptions.includeReferencedCard) {
+        // An answer to another Flashcard is referenced in the answer of this Flashcard
+        if(await r.isCardItem()) {
+          await addCards(plugin, await r.getParentRem() as Rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
+        } else {
+          // A Question of another Flashcard is referenced in the answer of this Flashcard
+          await addCards(plugin, r, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
         }
+      }
 
-        // OPTION: Include Flashcards from Rem that is referenced in this Flashcards answer
+      if(searchOptions.includeReferencedRem) {
+        cards = cards.concat(await getCardsOfRem( plugin,
+                                                    r,
+                                                    { ...searchOptions,
+                                                      includeAncestors: false,
+                                                      includeDescendants: false,
+                                                      referencedOnly: false,
+                                                      includeReferencedCard: false,
+                                                      includeReferencedRem: false,
+                                                      includeReferencingCard: false,
+                                                      includeReferencingRem: false},
+                                                    processed,
+                                                    addedCardIds,
+                                                    "->" + await getRemText(plugin, rem)));
+        // If includeReferencedRem == true these should already be included?
+        if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
+
+          for(const ref of questionRefs) {
+            await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath);
+          }
+        }
+      }
+    }
+    
+    // FLASHCARD: Handle References that appear in ANSWERS
+    for(const c of childrenRem) {
+      const answerRefs = await c.remsBeingReferenced();
+      
+      for(const r of answerRefs) {
+
+        // References to Flashcard in Answers
+        if(searchOptions.includeReferencedCard) {
+          // An answer to another Flashcard is referenced in the answer of this Flashcard
+          if(await r.isCardItem()) {
+            await addCards(plugin, await r.getParentRem() as Rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
+          } else {
+            // A Question of another Flashcard is referenced in the answer of this Flashcard
+            await addCards(plugin, r, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
+          }
+        }
+        
+        // References to Rem
         if(searchOptions.includeReferencedRem) {
-          const ref = refs[0];
-          cards = cards.concat(await getCardsOfRem(plugin, ref, {...searchOptions, includeAncestors: false, includeDescendants: true}, processed, addedCardIds));
+          cards = cards.concat(await getCardsOfRem( plugin,
+                                                    r,
+                                                    { ...searchOptions,
+                                                      includeAncestors: false,
+                                                      includeDescendants: true,
+                                                      referencedOnly: false,
+                                                      includeReferencedCard: false,
+                                                      includeReferencedRem: false,
+                                                      includeReferencingCard: false,
+                                                      includeReferencingRem: false},
+                                                    processed,
+                                                    addedCardIds,
+                                                    "->" + await getRemText(plugin, rem)));
+        }
+      }
+
+      // If includeReferencedRem == true these should already be included?
+      //if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
+        //for(const ref of answerRefs) {
+        //  await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
+        //}
+      //}
+    }
+  }
+
+  // REM: This Rem is referenced in a FLASHCARD (e.g., questions where this rem appears as an answer)
+  if(searchOptions.includeReferencingCard) {
+    const childrenRef = await rem.remsReferencingThis();
+    for (const ref of childrenRef) {
+      // QUESTION:
+      if(await isFlashcard(plugin, ref)) {
+        await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
+      }
+
+      // ANSWER: Reference appears in ANSWER
+      if (await ref.isCardItem() || await ref.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) {
+        const question = await ref.getParentRem();
+        if (question) {
+          await addCards(plugin, question, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
         }
       }
     }
   }
 
-  // OPTION: Handle portals if includePortals is true
+  // HIERARCHY: Handle portals if includePortals is true
   if (searchOptions.includePortals) {
-    const childrenRem = await getCleanChildren(plugin, rem);
+    //const childrenRem = await getCleanChildren(plugin, rem);
 
     for (const child of childrenRem) {
       if (await child.getType() === RemType.PORTAL) {
@@ -568,32 +717,235 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, searchOptions: SearchOp
           for(const r of rems) {
             //console.log(await getRemText(plugin, r))
             // Using r instead of await plugin.rem.findOne(r._id) throws a runtime error
-            cards = cards.concat(await getCardsOfRem(plugin, await plugin.rem.findOne(r._id) as Rem, searchOptions, processed, addedCardIds)); // { ...searchOptions, invertedDirection: false }
+            cards = cards.concat(await getCardsOfRem( plugin,
+                                                      await plugin.rem.findOne(r._id) as Rem,
+                                                      searchOptions,
+                                                      processed,
+                                                      addedCardIds,
+                                                      "->" + await getRemText(plugin, rem))); // { ...searchOptions, invertedDirection: false }
           }
       }
     }
   }
 
-  // OPTION: Add option to include this.
+  // HIERARCHY: Add option to include this.
+  if (searchOptions.includeAncestors) {
+    // Special Case
+    if(flashcard) {
+      const ancestorCards = await getCardsOfRem(plugin,
+                                                await rem.getParentRem() as Rem,
+                                                {...searchOptions, includeDescendants: false},
+                                                processed,
+                                                addedCardIds,
+                                                "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
+      cards = cards.concat(ancestorCards);
+    }
+
+    const lineages = await getAncestorLineage(plugin, rem);
+
+    for (const lineage of lineages) {
+      for (const ancestor of lineage) {
+        //console.log("Go to Ancestor: " + await getRemText(plugin, ancestor));
+        const ancestorCards = await getCardsOfRem(plugin,
+                                                  ancestor,
+                                                  { ...searchOptions, includeAncestors: false, includeDescendants: true },
+                                                  processed,
+                                                  addedCardIds,
+                                                  "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
+        cards = cards.concat(ancestorCards);
+      }
+    }
+  }
+
+  // HIERARCHY: Recurse into descendants and referencing rems
+  for(const child of childrenRem) {
+
+    // Properties
+    const cName = await getRemText(plugin, child);
+    if(cName == "Properties" || cName == "Eigenschaften") { // searchOptions.invertedDirection && 
+      cards = cards.concat(await getCardsOfRem( plugin,
+                                                child,
+                                                {...searchOptions, includeAncestors: false, includeDescendants: true},
+                                                processed,
+                                                addedCardIds,
+                                                "->" + await getRemText(plugin, rem))); // { ...searchOptions, invertedDirection: false }
+    }
+
+    if(searchOptions.includeDescendants) { 
+      //console.log("Goto Child: " + await getRemText(plugin, child))
+      cards = cards.concat(await getCardsOfRem( plugin,
+                                                child,
+                                                searchOptions,
+                                                processed,
+                                                addedCardIds,
+                                                "->" + await getRemText(plugin, rem)));
+    }
+  }
+
+  return cards;
+}
+
+/*
+async function getCardsOfRem( plugin: RNPlugin,
+                              rem: Rem,
+                              searchOptions: SearchOptions,
+                              processed = new Set<string>(),
+                              addedCardIds = new Set<string>(),
+                              cardPath: string = ""): Promise<Card[]> {
+  if (processed.has(rem._id)) return [];
+  processed.add(rem._id);
+
+  //console.log("GetCardsOfRem: " + await getRemText(plugin, rem));
+
+  let cards: Card[] = [];
+
+  let childrenRem = await getCleanChildren(plugin, rem);
+
+  const flashcard = await isFlashcard(plugin, rem);
+  // FLASHCARD: Add cards from this rem, filtered by due if specified
+  if(flashcard) {
+    await addCards(plugin, rem, cards, searchOptions, addedCardIds, cardPath);
+  }
+  
+
+  // FLASHCARD: Handle References that appear in this QUESTION
+  if(flashcard) {
+    const questionRefs = await rem.remsBeingReferenced();
+
+    // 
+    if(searchOptions.includeReferencedRem) {
+      for(const r of questionRefs) {
+        cards = cards.concat(await getCardsOfRem( plugin,
+                                                  r,
+                                                  { ...searchOptions,
+                                                    includeAncestors: false,
+                                                    includeDescendants: true,
+                                                    referencedOnly: false,
+                                                    includeReferencedCard: false,
+                                                    includeReferencedRem: false,
+                                                    includeReferencingCard: false,
+                                                    includeReferencingRem: false},
+                                                  processed,
+                                                  addedCardIds,
+                                                  "->" + await getRemText(plugin, rem)));
+      }
+    }
+
+    // If includeReferencedRem == true these should already be included?
+    if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
+
+      for(const ref of questionRefs) {
+        await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath);
+      }
+    }
+  }
+
+  // FLASHCARD: Handle References that appear in ANSWERS
+  if(flashcard) {
+    for(const c of childrenRem) {
+      const answerRefs = await c.remsBeingReferenced()
+      
+      // 
+      if(searchOptions.includeReferencedRem) {
+        for(const r of answerRefs) {
+          cards = cards.concat(await getCardsOfRem( plugin,
+                                                    r,
+                                                    { ...searchOptions,
+                                                      includeAncestors: false,
+                                                      includeDescendants: true,
+                                                      referencedOnly: false,
+                                                      includeReferencedCard: false,
+                                                      includeReferencedRem: false,
+                                                      includeReferencingCard: false,
+                                                      includeReferencingRem: false},
+                                                    processed,
+                                                    addedCardIds,
+                                                    "->" + await getRemText(plugin, rem)));
+        }
+      }
+
+      // If includeReferencedRem == true these should already be included?
+      if(searchOptions.includeReferencedCard && !searchOptions.includeReferencedRem) {
+
+        for(const ref of answerRefs) {
+          await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath);
+        }
+      }
+    }
+  }
+
+  // REM: This Rem is referenced in a FLASHCARD (e.g., questions where this rem appears as an answer)
+  if(searchOptions.includeReferencingCard) {
+    const childrenRef = await rem.remsReferencingThis();
+    for (const ref of childrenRef) {
+      // ANSWER: Reference appears in ANSWER
+      if (await ref.isCardItem() || await ref.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) {
+        const question = await ref.getParentRem();
+        if (question) {
+          await addCards(plugin, question, cards, searchOptions, addedCardIds, cardPath);
+        }
+      }
+
+      // QUESTION:
+      if(await isFlashcard(plugin, ref)) {
+        await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath);
+      }
+    }
+  }
+
+  // HIERARCHY: Handle portals if includePortals is true
+  if (searchOptions.includePortals) {
+    //const childrenRem = await getCleanChildren(plugin, rem);
+
+    for (const child of childrenRem) {
+      if (await child.getType() === RemType.PORTAL) {
+          const rems = await child.getPortalDirectlyIncludedRem();
+
+          //console.log("In Portal:");
+          for(const r of rems) {
+            //console.log(await getRemText(plugin, r))
+            // Using r instead of await plugin.rem.findOne(r._id) throws a runtime error
+            cards = cards.concat(await getCardsOfRem( plugin,
+                                                      await plugin.rem.findOne(r._id) as Rem,
+                                                      searchOptions,
+                                                      processed,
+                                                      addedCardIds,
+                                                      "->" + await getRemText(plugin, rem))); // { ...searchOptions, invertedDirection: false }
+          }
+      }
+    }
+  }
+
+  // HIERARCHY: Add option to include this.
   if (searchOptions.includeAncestors) {
 
     // Special Case
     if(flashcard) {
-      const ancestorCards = await getCardsOfRem(plugin, await rem.getParentRem() as Rem, {...searchOptions, includeDescendants: false}, processed, addedCardIds); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
+      const ancestorCards = await getCardsOfRem(plugin,
+                                                await rem.getParentRem() as Rem,
+                                                {...searchOptions, includeDescendants: false},
+                                                processed,
+                                                addedCardIds,
+                                                "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
       cards = cards.concat(ancestorCards);
     }
     const lineages = await getAncestorLineage(plugin, rem);
 
     for (const lineage of lineages) {
       for (const ancestor of lineage) {
-        console.log("Go to Ancestor: " + await getRemText(plugin, ancestor));
-        const ancestorCards = await getCardsOfRem(plugin, ancestor, { ...searchOptions, includeAncestors: false, includeDescendants: false }, processed, addedCardIds); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
+        //console.log("Go to Ancestor: " + await getRemText(plugin, ancestor));
+        const ancestorCards = await getCardsOfRem(plugin,
+                                                  ancestor,
+                                                  { ...searchOptions, includeAncestors: false, includeDescendants: false },
+                                                  processed,
+                                                  addedCardIds,
+                                                  "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
         cards = cards.concat(ancestorCards);
       }
     }
   }
 
-  // OPTION: Recurse into descendants and referencing rems
+  // HIERARCHY: Recurse into descendants and referencing rems
   if(searchOptions.includeDescendants) { // if(!searchOptions.invertedDirection) {
     //let childrenRef = await rem.remsReferencingThis();
 
@@ -601,13 +953,23 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, searchOptions: SearchOp
       // Properties
       const cName = await getRemText(plugin, child);
       if(cName == "Properties" || cName == "Eigenschaften") { // searchOptions.invertedDirection && 
-        cards = cards.concat(await getCardsOfRem(plugin, child, {...searchOptions, includeAncestors: false, includeDescendants: true}, processed, addedCardIds)); // { ...searchOptions, invertedDirection: false }
+        cards = cards.concat(await getCardsOfRem( plugin,
+                                                  child,
+                                                  {...searchOptions, includeAncestors: false, includeDescendants: true},
+                                                  processed,
+                                                  addedCardIds,
+                                                  "->" + await getRemText(plugin, rem))); // { ...searchOptions, invertedDirection: false }
       }
 
       // Recursion
-      // TODO: DISABLED support
+      // DISABLED support
       if(!await hasTag(plugin, child, "DISABLED")) {
-        cards = cards.concat(await getCardsOfRem(plugin, child, searchOptions, processed, addedCardIds));
+        cards = cards.concat(await getCardsOfRem( plugin,
+                                                  child,
+                                                  searchOptions,
+                                                  processed,
+                                                  addedCardIds,
+                                                  "->" + await getRemText(plugin, rem)));
       }
     }
 
@@ -616,44 +978,19 @@ async function getCardsOfRem(plugin: RNPlugin, rem: Rem, searchOptions: SearchOp
     for(const c of childrenRef) {
       // All Descendants or only Descendants that are not Flashcards?
       if(searchOptions.includeReferencingCard || (!searchOptions.includeReferencingCard && !await isFlashcard(plugin, c))) {
-        cards = cards.concat(await getCardsOfRem(plugin, c, {...searchOptions, includeAncestors: false, includeDescendants: true}, processed, addedCardIds));
+        cards = cards.concat(await getCardsOfRem( plugin,
+                                                  c,
+                                                  {...searchOptions, includeAncestors: false, includeDescendants: true},
+                                                  processed,
+                                                  addedCardIds,
+                                                  "->" + await getRemText(plugin, rem)));
       }
     }
   }
-
-  // What to do with rems referencing this rem? If 'rem' is referenced.
-  const childrenRef = await rem.remsReferencingThis();
-
-  // OPTION: (e.g., questions where this rem appears as an answer)
-  if(searchOptions.includeReferencingCard) {
-    console.log("Include Referencing Card");
-
-    for (const ref of childrenRef) {
-      // Flashcards referening 'rem'. If the reference occurs in the answer of a flashcard. Add that flashcard.
-      if (await ref.isCardItem() || await ref.hasPowerup(BuiltInPowerupCodes.ExtraCardDetail)) {
-        const question = await ref.getParentRem();
-        if (question) {
-          const questionCards = await question.getCards();
-          for (const card of questionCards) {
-            if (!addedCardIds.has(card._id)) {
-              addedCardIds.add(card._id);
-              if (!searchOptions.dueOnly || isDue(card)) {
-                cards.push(card);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // OPTION: TODO: What if Concepts reference 'rem'?
-  //if(searchOptions.includeReferencingRem) {
-
-  //}
 
   return cards;
 }
+*/
 
 /*
 
@@ -933,6 +1270,9 @@ function CustomQueueWidget() {
                                                                         includeDescendants: true,
                                                                         dueOnly: false,
                                                                         disabledOnly: false,
+                                                                        referencedOnly: false,
+                                                                        ratingOnly: false,
+                                                                        ratingFilter: QueueInteractionScore.AGAIN,
                                                                         includePortals: false,
                                                                         //invertedDirection: false,
                                                                         includeReferencedCard: true,
@@ -1008,6 +1348,8 @@ function CustomQueueWidget() {
     const loadRemQueue = async () => {
       //console.log(await getRemText(plugin, focusedRem));
 
+      console.log(searchOptions);
+
       setCardIds([]);
       setCards([]);
       setCardsData([]);
@@ -1021,21 +1363,65 @@ function CustomQueueWidget() {
               const text = await getRemText(plugin, currentFocusedRem);
               setQueueRemText(text);
 
-              //const fetchedCards = await getCardsOfRemDown(plugin, currentFocusedRem);
-              if(!searchOptions.disabledOnly) {
-                let fetchedCards: Card[] = [];
+              //let fetchedCards: Card[] = [];
+              let fetchedCards: SearchData[] = [];
+              fetchedCards = await getCardsOfRem(plugin, currentFocusedRem, searchOptions);
 
-                fetchedCards = await getCardsOfRem(plugin, currentFocusedRem, searchOptions) as Card[];
-
-                const ids = fetchedCards.map((c) => c._id);
-                setCardIds(ids);
-                setCards(fetchedCards);
-                setCardsData(await questionsFromCards(plugin, fetchedCards));
-
-                await plugin.storage.setSynced("currentQueueCardIds", ids);
-              } else {
-                //setCardsData(await getDisabledRem(plugin, currentFocusedRem, searchOptions) as DisabledRemInfo[])
+              // DUEONLY: Remove Cards that are not due, if dueOnly option is checked.
+              if(searchOptions.dueOnly) {
+                for (let i = fetchedCards.length - 1; i >= 0; i--) {
+                  if(!isDue(fetchedCards[i])) {
+                    fetchedCards.splice(i, 1);
+                  }
+                }
               }
+
+              // REFERENCEDONLY: Remove Cards that are Non-Ref Cards, if referencedOnly option is checked.
+              if(searchOptions.referencedOnly) {
+                const nonRefCards = await getCardsOfRem(plugin, currentFocusedRem, {...searchOptions, 
+                                                                                    referencedOnly: false,
+                                                                                    includeReferencedCard: false,
+                                                                                    includeReferencingCard: false,
+                                                                                    includeReferencedRem: false,
+                                                                                    includeReferencingRem: false});
+                
+                // Create a Set of _ids from B for efficient lookup
+                const bIds = new Set(nonRefCards.map(card => card.card._id));
+
+                // Iterate backward through A to safely remove elements
+                for (let i = fetchedCards.length - 1; i >= 0; i--) {
+                  if (bIds.has(fetchedCards[i].card._id)) {
+                    fetchedCards.splice(i, 1); // Remove the card at index i if its _id is in B
+                  }
+                }
+              }
+
+              // RATINGONLY
+              if(searchOptions.ratingOnly) {
+                for(let i = fetchedCards.length-1; i >= 0; i--) {
+                  const rep = fetchedCards[i].card.repetitionHistory;
+
+                  if(!(rep && rep[rep.length-1] && rep[rep.length-1].score == searchOptions.ratingFilter)) {
+                    fetchedCards.splice(i, 1);
+                  }
+                }
+              }
+
+              // DISABLEDONLY: 
+              for (let i = fetchedCards.length - 1; i >= 0; i--) {
+                //console.log(i + " " + await getRemText(plugin, fetchedCards[i].rem) + " isDisabled: " + await isDisabled(plugin, fetchedCards[i]));
+                if(!(await isDisabled(plugin, fetchedCards[i]) == searchOptions.disabledOnly)) {
+                  fetchedCards.splice(i, 1);
+                } 
+              }
+              
+              //
+              const ids = fetchedCards.map((c) => c.card._id);
+              setCardIds(ids);
+              const cards = fetchedCards.map((c) => c.card);
+              setCards(cards);
+              setCardsData(await questionsFromCards(plugin, cards));
+              await plugin.storage.setSynced("currentQueueCardIds", ids);
               await plugin.storage.setSynced("currentQueueRemId", currentFocusedRem._id);
               setLoading(false);
               setCurrentQueueRem(currentFocusedRem);
@@ -1125,46 +1511,22 @@ function CustomQueueWidget() {
                   <h3>Hierarchy</h3>
                   <label style={{ display: "block" }}>
                     <input 
-                      type="checkbox" 
+                      type="radio" 
+                      name="Hierarchy"
                       checked={searchOptions?.includeAncestors} 
-                      onChange={(e) => setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors })} 
+                      onChange={(e) =>  setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors, includeDescendants: !searchOptions.includeDescendants }) }  //setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors})
                     /> 
-                    Include Ancestors
+                    All including Ancestors
                   </label>
                   <label style={{ display: "block" }}>
                     <input 
-                      type="checkbox" 
+                      type="radio" 
+                      name="Hierarchy"
                       checked={searchOptions?.includeDescendants} 
-                      onChange={(e) => setSearchOptions({ ...searchOptions, includeDescendants: !searchOptions.includeDescendants })} 
+                      onChange={(e) => setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors, includeDescendants: !searchOptions.includeDescendants })} 
                     /> 
-                    Include Descendants
+                    Only include Descendants
                   </label>
-                </div>
-                
-                {/* Card Properties group */}
-                <div>
-                  <h3>Card Properties</h3>
-                  <label style={{ display: "block" }} title='Only add Flashcards that are Due.'>
-                    <input 
-                      type="checkbox" 
-                      checked={searchOptions?.dueOnly} 
-                      onChange={(e) => setSearchOptions({ ...searchOptions, dueOnly: !searchOptions.dueOnly })} 
-                    /> 
-                    Due Only
-                  </label>
-                  <label style={{ display: "block" }} title='Only add Flashcards that are Disabled.'>
-                    <input 
-                      type="checkbox" 
-                      checked={searchOptions?.disabledOnly} 
-                      onChange={(e) => setSearchOptions({ ...searchOptions, disabledOnly: !searchOptions.disabledOnly })} 
-                    /> 
-                    Disabled Only
-                  </label>
-                </div>
-                
-                {/* Portal group */}
-                <div>
-                  <h3>Portal</h3>
                   <label style={{ display: "block" }} title='Include Flashcards from inside Portals.'>
                     <input 
                       type="checkbox" 
@@ -1175,38 +1537,77 @@ function CustomQueueWidget() {
                   </label>
                 </div>
                 
+                {/* Card Properties group */}
+                <div>
+                  <h3>Flashcard Filter</h3>
+                  <label style={{ display: "block" }} title='Only add Flashcards that are Due.'>
+                    <input 
+                      type="checkbox" 
+                      checked={searchOptions?.dueOnly} 
+                      onChange={(e) => setSearchOptions({ ...searchOptions, dueOnly: !searchOptions.dueOnly })} 
+                    /> 
+                    Due
+                  </label>
+                  <label style={{ display: "block" }} title='Only add Flashcards that are Disabled.'>
+                    <input 
+                      type="checkbox" 
+                      checked={searchOptions?.disabledOnly} 
+                      onChange={(e) => setSearchOptions({ ...searchOptions, disabledOnly: !searchOptions.disabledOnly })} 
+                    /> 
+                    Disabled
+                  </label>
+                  <label style={{ display: "block" }} title='Only add Flashcards that are a Reference.'>
+                    <input 
+                      type="checkbox" 
+                      checked={searchOptions?.referencedOnly} 
+                      onChange={(e) => setSearchOptions({ ...searchOptions, referencedOnly: !searchOptions.referencedOnly })} 
+                    /> 
+                    Referenced
+                  </label>
+                  <label style={{ display: "block" }} title='Only add Flashcards that were rated a particular way the last time'>
+                    <input 
+                      type="checkbox" 
+                      checked={searchOptions?.ratingOnly} 
+                      onChange={(e) => setSearchOptions({ ...searchOptions, ratingOnly: !searchOptions.ratingOnly })} 
+                    /> 
+                      <input type="radio" name="Rating" id="Rating_0" value="Rating_0" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.TOO_EARLY})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Skip")} />
+                      <input type="radio" name="Rating" id="Rating_1" value="Rating_1" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.AGAIN})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Forgot")} />
+                      <input type="radio" name="Rating" id="Rating_2" value="Rating_2" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.HARD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Partially recalled")} />
+                      <input type="radio" name="Rating" id="Rating_3" value="Rating_3" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.GOOD})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Recalled with effort")} />
+                      <input type="radio" name="Rating" id="Rating_4" value="Rating_4" onChange={(e) => setSearchOptions({...searchOptions, ratingFilter: QueueInteractionScore.EASY})}/> <img style={{ width: '20px', height: '20px', }} src={scoreToImage.get("Easily recalled")} />
+                  </label>
+                </div>
+                
                 {/* Flashcards Referenced and Referencing group */}
                 <div>
-                  <h3>Flashcards</h3>
-                  <h3>Flashcards Referenced and Referencing</h3>
-                  <label style={{ display: "block" }} title='Include Flashcards that are referenced in Flashcards of the Queue.'>
+                  <h3>Include Flashcards</h3>
+                  <label style={{ display: "block" }} title='Include Flashcards that are mentioned in Q/A'>
                     <input 
                       type="checkbox" 
                       checked={searchOptions?.includeReferencedCard} 
                       onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedCard: !searchOptions.includeReferencedCard })} 
                     /> 
-                     Referenced Flashcards.
+                     Flashcards referenced in Q or A.
                   </label>
-                  <label style={{ display: "block" }} title='Include Flashcards that reference a Flashcard of the Queue'>
+                  <label style={{ display: "block" }} title='Include Flashcards that mention a Rem of the Queue.'>
                     <input 
                       type="checkbox" 
                       checked={searchOptions?.includeReferencingCard} 
                       onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencingCard: !searchOptions.includeReferencingCard })} 
                     /> 
-                     Referencing Flashcards.
+                     Other Flashcards that reference Rem in Q or A
                   </label>
+                  
                 </div>
-                
-                {/* Rem Referenced and Referencing group */}
                 <div>
-                  <h3>Rem Referenced and Referencing</h3>
-                  <label style={{ display: "block" }} title='Include Flashcards from Rem that are referenced in Flashcards of the Queue'>
+                  <h3>Include Rems</h3>
+                  <label style={{ display: "block" }} title='Include Flashcards from Rems that are mentioned in Q/A'>
                     <input 
                       type="checkbox" 
                       checked={searchOptions?.includeReferencedRem} 
                       onChange={(e) => setSearchOptions({ ...searchOptions, includeReferencedRem: !searchOptions.includeReferencedRem })} 
                     /> 
-                     Referenced Rem.
+                     Rems referenced in Q or A.
                   </label>
                 </div>
                 
@@ -1234,7 +1635,7 @@ function CustomQueueWidget() {
                       <thead>
                         <tr>
                           <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}>Question</th>
-                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}><MyRemNoteButton text="Next Date" onClick={() => { setSortAscending(!sortAscending); setIsListExpanded(false); }} /></th>
+                          <th style={{ border: "1px solid #ddd", padding: 8, textAlign: "left" }}><MyRemNoteButton text="Next Date" onClick={() => { setSortAscending(!sortAscending); setIsListExpanded(true); }} /></th>
                         </tr>
                       </thead>
                       <tbody>
