@@ -490,7 +490,8 @@ interface SearchOptions {
   includeReferencedCard: boolean,
   includeReferencingCard: boolean,
   includeReferencedRem: boolean,
-  includeReferencingRem: boolean
+  includeReferencingRem: boolean,
+  maximumNumberOfCards: number
 }
 
 // Helper function assumed to be defined elsewhere
@@ -1278,7 +1279,8 @@ function CustomQueueWidget() {
                                                                         includeReferencedCard: true,
                                                                         includeReferencingCard: true,
                                                                         includeReferencedRem: false,
-                                                                        includeReferencingRem: false});
+                                                                        includeReferencingRem: false,
+                                                                        maximumNumberOfCards: 0});
 
     const [isQueueExpanded, setIsQueueExpanded] = useState<boolean>(true);
 
@@ -1344,6 +1346,14 @@ function CustomQueueWidget() {
       };
       updateBuildQueueRemText();
     }, [buildQueueRem]);
+
+    function shuffle<T>(array: T[]): T[] {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+      }
+      return array;
+    }
 
     const loadRemQueue = async () => {
       //console.log(await getRemText(plugin, focusedRem));
@@ -1414,6 +1424,10 @@ function CustomQueueWidget() {
                   fetchedCards.splice(i, 1);
                 } 
               }
+
+              //
+              fetchedCards = shuffle<SearchData>(fetchedCards);
+              fetchedCards = searchOptions.maximumNumberOfCards != 0 ? fetchedCards.slice(0, searchOptions.maximumNumberOfCards) : fetchedCards;
               
               //
               const ids = fetchedCards.map((c) => c.card._id);
@@ -1610,12 +1624,16 @@ function CustomQueueWidget() {
                      Rems referenced in Q or A.
                   </label>
                 </div>
-                
+                <div>
+                <label>
+                  Maximum Cards <input type='text' onChange={(e) => setSearchOptions({...searchOptions, maximumNumberOfCards: Number(e.target.value)})} /> 
+                </label>
                 <MyRemNoteButton 
                   text="Build Queue" 
                   onClick={async () => {await loadRemQueue()}} 
                   img="M9 8h10M9 12h10M9 16h10M4.99 8H5m-.02 4h.01m0 4H5" 
                 />
+                </div>
               </div>
             )}
           </div>
