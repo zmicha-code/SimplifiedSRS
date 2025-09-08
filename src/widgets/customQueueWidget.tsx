@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 //import { getLastInterval, getWrongInRow, formatMilliseconds } from ''
 import MyRemNoteButton from '../components/MyRemNoteButton';
 import { format } from 'path';
+import { Console } from 'console';
 
 // -> AbstractionAndInheritance
 export const specialNames = ["Collapse Tag Configure Options", "Hide Bullets", "Status", "query:", "query:#", "contains:", "Document", "Tags", "Rem With An Alias", "Highlight", "Tag", "Color", "Alias", "Aliases", "Bullet Icon"]; // , "Definition", "Eigenschaften"
@@ -441,6 +442,9 @@ function formatMilliseconds(ms : number, abs = false): string {
 
 async function isFlashcard(plugin: RNPlugin, rem: Rem): Promise <boolean> {
 
+  if((await rem.getCards()).length > 0)
+    return true;
+
   const children = await getCleanChildren(plugin, rem);
 
   for(const c of children) {
@@ -456,7 +460,7 @@ async function getFlashcard(plugin: RNPlugin, rem: Rem): Promise <Card[]> {
   const children = await getCleanChildren(plugin, rem);
 
   for(const c of children) {
-    if(await c.isCardItem())
+    if(await c.isCardItem()) // || await hasTag(plugin, c, "Extra Card Detail")
       return await c.getCards();
   }
 
@@ -600,6 +604,8 @@ async function getCardsOfRem( plugin: RNPlugin,
   // FLASHCARD: Add cards from this rem, filtered by due if specified
   if(flashcard) {
     await addCards(plugin, rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
+  } else {
+    console.log(await getRemText(plugin, rem) + " is not a flashcard (getCards: " + (await rem.getCards()).length + ")")
   }
   
   // FLASHCARD:
@@ -683,7 +689,7 @@ async function getCardsOfRem( plugin: RNPlugin,
         //for(const ref of answerRefs) {
         //  await addCards(plugin, ref, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
         //}
-      //}
+      //} 
     }
   }
 
@@ -1376,6 +1382,8 @@ function CustomQueueWidget() {
               //let fetchedCards: Card[] = [];
               let fetchedCards: SearchData[] = [];
               fetchedCards = await getCardsOfRem(plugin, currentFocusedRem, searchOptions);
+
+              console.log("fetchedCards: " + fetchedCards.length)
 
               // DUEONLY: Remove Cards that are not due, if dueOnly option is checked.
               if(searchOptions.dueOnly) {
