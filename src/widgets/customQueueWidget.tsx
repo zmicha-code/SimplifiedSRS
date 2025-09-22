@@ -22,8 +22,50 @@ const DEFAULT_HARD = 12 * MS_PER_HOUR;
 const DEFAULT_GOOD = 2 * MS_PER_DAY;
 const DEFAULT_EASY = 4 * MS_PER_DAY;
 
+// --- Inheritance via "extends" descriptor helpers ---
+// Finds the child descriptor named exactly "extends" (case-insensitive)
+export async function getExtendsDescriptor(plugin: RNPlugin, rem: Rem): Promise<Rem | undefined> {
+  try {
+    const children = await rem.getChildrenRem();
+    for (const child of children) {
+      try {
+        const [t, name] = await Promise.all([child.getType(), getRemText(plugin, child)]);
+        if (t === RemType.DESCRIPTOR && name.trim().toLowerCase() === "extends") {
+          return child;
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return undefined;
+}
+
+// Returns the parent Rems referenced under the "extends" descriptor child of `rem`.
+export async function getExtendsParents(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  const ext = await getExtendsDescriptor(plugin, rem);
+  if (!ext) return [];
+  const resultMap = new Map<string, Rem>();
+  try {
+    const extChildren = await ext.getChildrenRem();
+    for (const c of extChildren) {
+      try {
+        const refs = await c.remsBeingReferenced();
+        for (const r of refs) {
+          if (!resultMap.has(r._id)) resultMap.set(r._id, r);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return Array.from(resultMap.values());
+}
+
+export async function isReferencingRem(plugin: RNPlugin, rem: Rem): Promise<boolean> {
+  if (!rem) return false;
+  const parents = await getExtendsParents(plugin, rem);
+  return parents.length > 0;
+}
+
 // -> AbstractionAndInheritance
-async function isReferencingRem(plugin: RNPlugin, rem: Rem): Promise<boolean> {
+async function isReferencingRem_(plugin: RNPlugin, rem: Rem): Promise<boolean> {
     if(rem)
     return (await rem.remsBeingReferenced()).length != 0;
 
@@ -147,25 +189,76 @@ async function getRemText(plugin: RNPlugin, rem: Rem | undefined, extentedName =
 
 // -> AbstractionAndInheritance
 async function getCleanChildren(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
-    const childrenRems = await rem.getChildrenRem();
-    const cleanChildren: Rem[] = [];
-    for (const childRem of childrenRems) {
-    const text = await getRemText(plugin, childRem);
+  const childrenRems = await rem.getChildrenRem();
+  const cleanChildren: Rem[] = [];
+
+  for (const childRem of childrenRems) {
+    const [text, type] = await Promise.all([
+      getRemText(plugin, childRem),
+      childRem.getType(),
+    ]);
+    const normalized = text.trim().toLowerCase();
+
+    if (type === RemType.DESCRIPTOR && normalized === "extends") {
+      continue;
+    }
+
     if (!specialNames.includes(text)) {
       cleanChildren.push(childRem);
     }
+  }
+
+  return cleanChildren;
 }
-return cleanChildren;
+
+async function resolveExtendsOwner(
+  plugin: RNPlugin,
+  referencingRem: Rem
+): Promise<Rem | undefined> {
+  const visited = new Set<string>();
+  let current: Rem | undefined = referencingRem;
+
+  while (current) {
+    if (visited.has(current._id)) {
+      break;
+    }
+    visited.add(current._id);
+
+    const type = await current.getType();
+    const parent = await current.getParentRem();
+
+    if (type === RemType.DESCRIPTOR) {
+      const name = (await getRemText(plugin, current)).trim().toLowerCase();
+      if (name === "extends") {
+        return parent ?? undefined;
+      }
+    }
+
+    current = parent ?? undefined;
+  }
+
+  return undefined;
 }
 
 // -> AbstractionAndInheritance
 export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
-  // Fetch direct children and referencing Rems
-  const childrenRems = await rem.getChildrenRem();
-  const referencingRems = await rem.remsReferencingThis();
-  const allRems = [...childrenRems, ...referencingRems];
+  const [childrenRems, referencingRems] = await Promise.all([
+    rem.getChildrenRem(),
+    rem.remsReferencingThis(),
+  ]);
 
-  // Remove duplicates based on Rem _id
+  const normalizedReferencing: Rem[] = [];
+  for (const ref of referencingRems) {
+    const owner = await resolveExtendsOwner(plugin, ref);
+    if (owner && owner._id !== rem._id) {
+      normalizedReferencing.push(owner);
+      continue;
+    }
+    normalizedReferencing.push(ref);
+  }
+
+  const allRems = [...childrenRems, ...normalizedReferencing];
+
   const uniqueRemsMap = new Map<string, Rem>();
   for (const r of allRems) {
     if (!uniqueRemsMap.has(r._id)) {
@@ -174,20 +267,28 @@ export async function getCleanChildrenAll(plugin: RNPlugin, rem: Rem): Promise<R
   }
   const uniqueRems = Array.from(uniqueRemsMap.values());
 
-  // Fetch texts concurrently for efficiency
-  const texts = await Promise.all(uniqueRems.map(r => getRemText(plugin, r)));
+  const [texts, types] = await Promise.all([
+    Promise.all(uniqueRems.map((r) => getRemText(plugin, r))),
+    Promise.all(uniqueRems.map((r) => r.getType())),
+  ]);
 
-  // Apply the same filtering as getCleanChildren
   const cleanRems: Rem[] = [];
   for (let i = 0; i < uniqueRems.length; i++) {
     const text = texts[i];
+    const type = types[i];
+    const normalized = text.trim().toLowerCase();
+
     if (
-      !specialNames.includes(text) &&
-      !specialNameParts.some(part => text.startsWith(part))
+      specialNames.includes(text) ||
+      specialNameParts.some((part) => text.startsWith(part)) ||
+      (type === RemType.DESCRIPTOR && normalized === "extends")
     ) {
-      cleanRems.push(uniqueRems[i]);
+      continue;
     }
+
+    cleanRems.push(uniqueRems[i]);
   }
+
   return cleanRems;
 }
 
@@ -198,7 +299,7 @@ export async function getAncestorLineage(plugin: RNPlugin, rem: Rem): Promise<Re
 }
 
 async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]): Promise<Rem[][]> {
-  const parents = (await getParentClassType(plugin, currentRem)) || [];
+  const parents = (await getParentClass(plugin, currentRem)) || [];
 
   if (parents.length === 1 && parents[0]._id === currentRem._id) {
     return [currentPath];
@@ -214,8 +315,30 @@ async function findPaths(plugin: RNPlugin, currentRem: Rem, currentPath: Rem[]):
   }
 }
 
+export async function getParentClass(plugin: RNPlugin, rem: Rem): Promise<Rem[]> {
+  if (!rem) return [];
+
+  const [isDocument, directParent, extendsParents] = await Promise.all([
+    rem.isDocument(),
+    rem.getParentRem(),
+    getExtendsParents(plugin, rem),
+  ]);
+
+  // Property (document): inherits via extends, otherwise defines a new type
+  if (isDocument) {
+    if (extendsParents.length > 0) return extendsParents;
+    return [rem];
+  }
+
+  // Interface (non-document): first the structural parent, then any extends parents
+  const result: Rem[] = [];
+  if (directParent) result.push(directParent);
+  for (const p of extendsParents) if (!result.some((r) => r._id === p._id)) result.push(p);
+  return result.length > 0 ? result : [rem];
+}
+
 // Function to get the closest class parent for a Rem
-export async function getParentClassType(plugin: RNPlugin, rem: Rem): Promise<Rem[] | null> {
+export async function getParentClass_(plugin: RNPlugin, rem: Rem): Promise<Rem[] | null> {
   if (!rem) return null;
 
   const parent = await rem.getParentRem();
@@ -604,8 +727,6 @@ async function getCardsOfRem( plugin: RNPlugin,
   // FLASHCARD: Add cards from this rem, filtered by due if specified
   if(flashcard) {
     await addCards(plugin, rem, cards, searchOptions, addedCardIds, cardPath + "->" + await getRemText(plugin, rem));
-  } else {
-    console.log(await getRemText(plugin, rem) + " is not a flashcard (getCards: " + (await rem.getCards()).length + ")")
   }
   
   // FLASHCARD:
@@ -755,7 +876,7 @@ async function getCardsOfRem( plugin: RNPlugin,
         //console.log("Go to Ancestor: " + await getRemText(plugin, ancestor));
         const ancestorCards = await getCardsOfRem(plugin,
                                                   ancestor,
-                                                  { ...searchOptions, includeAncestors: false, includeDescendants: true },
+                                                  { ...searchOptions, includeAncestors: false, includeDescendants: false },
                                                   processed,
                                                   addedCardIds,
                                                   "->" + await getRemText(plugin, rem)); //await getCardsOfRem(plugin, ancestor, { ...searchOptions, bothDirections: false }, processed, addedCardIds);
@@ -769,6 +890,7 @@ async function getCardsOfRem( plugin: RNPlugin,
 
     // Properties
     const cName = await getRemText(plugin, child);
+
     if(cName == "Properties" || cName == "Eigenschaften") { // searchOptions.invertedDirection && 
       cards = cards.concat(await getCardsOfRem( plugin,
                                                 child,
@@ -1538,7 +1660,7 @@ function CustomQueueWidget() {
                       checked={searchOptions?.includeAncestors} 
                       onChange={(e) =>  setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors, includeDescendants: !searchOptions.includeDescendants }) }  //setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors})
                     /> 
-                    All including Ancestors
+                    This Rem and Ancestors
                   </label>
                   <label style={{ display: "block" }}>
                     <input 
@@ -1547,7 +1669,7 @@ function CustomQueueWidget() {
                       checked={searchOptions?.includeDescendants} 
                       onChange={(e) => setSearchOptions({ ...searchOptions, includeAncestors: !searchOptions.includeAncestors, includeDescendants: !searchOptions.includeDescendants })} 
                     /> 
-                    Only include Descendants
+                    This Rem and Descendants
                   </label>
                   <label style={{ display: "block" }} title='Include Flashcards from inside Portals.'>
                     <input 
